@@ -29,8 +29,16 @@ enum Engine {
         /// True when the colour count was reduced, which PNG does by default.
         let quantized: Bool
         let originalBytes: Int
+        /// True when the output is a JPEG made from a source of another format.
+        let converted: Bool
 
         var ratio: Double { Double(data.count) / Double(originalBytes) }
+
+        /// The extension the bytes actually are, read from their magic. The
+        /// engine writes JPEG or PNG and nothing else.
+        var outputExtension: String {
+            data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "png" : "jpg"
+        }
     }
 
     struct Failure: LocalizedError {
@@ -77,7 +85,8 @@ enum Engine {
             score: result.score.isNaN ? nil : result.score,
             hdr: Hdr(rawValue: result.hdr) ?? .absent,
             quantized: result.quantized != 0,
-            originalBytes: result.original_len
+            originalBytes: result.original_len,
+            converted: result.converted != 0
         )
     }
 }
