@@ -86,6 +86,22 @@ fn main() {
             std::process::exit(1)
         }
     };
+    // Scoring one file against another, which is how a fixed-quality result
+    // gets a perceptual number attached to it. Handled before any mode is
+    // dispatched, so that a PNG can be the reference: the PNG branch below
+    // returns without looking at this flag.
+    if let Some(other) = &against {
+        let ob = std::fs::read(other).unwrap_or_else(|e| { eprintln!("could not read {other}: {e}"); std::process::exit(1) });
+        let reference = Source::open(&bytes, None).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) }).image;
+        let candidate = Source::open(&ob, None).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) }).image;
+        let t0 = Instant::now();
+        match score(&reference, &candidate) {
+            Ok(s) => println!("compare {} vs {}  score {:.4}  {:.0} KB -> {:.0} KB  {:.3}s",
+                path, other, s, bytes.len() as f64 / 1024.0, ob.len() as f64 / 1024.0, t0.elapsed().as_secs_f64()),
+            Err(e) => { eprintln!("{e}"); std::process::exit(1) }
+        }
+        return;
+    }
     if mode == "strip" {
         let t0 = Instant::now();
         match optimize(&bytes, Mode::Strip, 0.0, 0.0, None, probes, None) {
@@ -174,20 +190,6 @@ fn main() {
         src.orientation,
         if src.orientation != 1 { " (baked into pixels)" } else { "" }
     );
-
-    // Scoring one file against another, which is how a fixed-quality result gets
-    // a perceptual number attached to it.
-    if let Some(other) = against {
-        let ob = std::fs::read(&other).unwrap_or_else(|e| { eprintln!("could not read {other}: {e}"); std::process::exit(1) });
-        let oi = Source::open(&ob, None).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) }).image;
-        let t0 = Instant::now();
-        match score(&image, &oi) {
-            Ok(s) => println!("compare {} vs {}  score {:.4}  {:.0} KB -> {:.0} KB  {:.3}s",
-                path, other, s, bytes.len() as f64 / 1024.0, ob.len() as f64 / 1024.0, t0.elapsed().as_secs_f64()),
-            Err(e) => { eprintln!("{e}"); std::process::exit(1) }
-        }
-        return;
-    }
 
     let started = Instant::now();
     match mode.as_str() {
