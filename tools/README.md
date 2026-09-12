@@ -14,3 +14,23 @@ cannot be used to verify this. Reading the bytes can.
 It found a real defect during development: a first implementation of Strip mode
 copied everything from the start-of-scan marker to the end of the file, and XMP
 survived, because Apple writes trailing data past the end-of-image marker.
+
+## Corpus tools
+
+Three scripts generate malformed inputs and run them through every engine mode. CI runs them on synthetic seeds; a pre-release run uses real photographs kept outside the repository.
+
+```
+python3 tools/corpus-seeds.py seeds
+python3 tools/corpus-gen.py seeds/seed.png seeds/seed.jpg seeds/seed.heic -o corpus
+python3 tools/corpus-run.py core/target/release/squint corpus -o corpus-report.json
+```
+
+`corpus-seeds.py` writes a 2401x1601 picture whose pixel at (x, y) is (x, y, 200) modulo 256 plus a few counts of fixed noise, as PNG, and converts it to JPEG and HEIC with `sips`. The width is odd so a row is not a multiple of any alignment Quartz pads to; the size is above the email preset's 2048 px cap so the resize path runs. If `sips` cannot write HEIC the script exits 3 and says so.
+
+`corpus-gen.py` writes deterministic variants of each seed: truncation at five fractions, segment or chunk lengths off by one and claiming gigabytes, missing markers, corrupted CRCs, bit flips inside coded data, and for HEIC an `iloc` extent pointing 1 MiB past the file and an `ispe` on the primary item (found through `pitm` and `ipma`) declaring 60000x60000, a width of 1, or double the real width. The seeds themselves go in as the `control` family. A variant identical to its seed, or a seed that yields none of the families its kind must have, makes the generator exit 2.
+
+`corpus-run.py` runs every file through `fast`, `quality`, `strip` and `email` (fast with `--max-dimension 2048`) under a watchdog, then judges each run. A run is DANGEROUS when the engine timed out, crashed, reported success and wrote nothing, wrote output from a HEIC that was cut short or whose index points past the file, wrote a file the system decoder cannot open, wrote the wrong size for the mode, wrote a file whose bytes are not the format its name claims, or wrote a picture that no longer resembles the seed. Resemblance is the engine's own `--against` score of the output against the seed PNG, decoded by the `image` crate rather than by the path under test; a black frame scores below -700, a correct output above 65, and the floor is 40. Families that corrupt pixels on purpose, and truncated JPEG or PNG inputs whose partial picture is real, skip the resemblance check. The seeds recorded in the manifest must be the ones present, or the run refuses to start.
+
+Exit codes: 0 clean, 1 dangerous runs, 2 the harness itself failed (no executable binary, missing or changed seeds, no controls, nothing tested).
+
+Verified by substitution: a stand-in engine that writes a black JPEG for every input scores 199 dangerous runs on a 61-file corpus, every control included.

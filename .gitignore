@@ -67,3 +67,4 @@ design/icon-slit-variations.html
 
 # Rust build output
 core/target/
+__pycache__/
