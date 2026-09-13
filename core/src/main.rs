@@ -153,12 +153,12 @@ fn main() {
         return;
     }
 
-    // Reported before decoding, because a TIFF cannot be decoded here at all and
+    // Reported before decoding, because neither can be decoded here at all and
     // the reason should be the one the engine gives rather than a decoder's
     // complaint about a format it was never taught.
-    if squint_core::tiff::is_tiff(&bytes) {
+    if squint_core::tiff::is_tiff(&bytes) || squint_core::gif::is_gif(&bytes) {
         match optimize(&bytes, Mode::Fast, target, fixed_quality, png_min_quality, probes, None) {
-            Ok(_) => unreachable!("a TIFF cannot be re-encoded"),
+            Ok(_) => unreachable!("neither a TIFF nor a GIF can be re-encoded"),
             Err(e) => { eprintln!("{e}"); std::process::exit(1) }
         }
     }
