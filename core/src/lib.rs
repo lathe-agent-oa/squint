@@ -9,6 +9,7 @@ pub mod ffi;
 pub mod heif;
 pub mod tiff;
 pub mod gainmap;
+pub mod gif;
 pub mod png;
 pub mod source;
 #[cfg(target_os = "macos")]
@@ -503,6 +504,26 @@ pub fn optimize(
         // than cutting it out, so the result is exactly as long as the input.
         // Whether anything was removed is answered by how much was destroyed,
         // not by the file having shrunk.
+        if gif::is_gif(bytes) {
+            let (stripped, wiped) = gif::strip_gif(bytes)
+                .ok_or_else(|| Error::Decode("this GIF is not laid out as expected".into()))?;
+            if wiped == 0 {
+                return Err(Error::NoSmallerResult {
+                    best_bytes: bytes.len(),
+                    original_bytes: bytes.len(),
+                });
+            }
+            return Ok(Optimized {
+                data: stripped,
+                probes: Vec::new(),
+                score: None,
+                hdr: Hdr::Absent,
+                quantized: false,
+                original_bytes: bytes.len(),
+                converted_from: None,
+            });
+        }
+
         if heif::is_heif(bytes) || tiff::is_tiff(bytes) {
             let (stripped, wiped) = if heif::is_heif(bytes) {
                 heif::strip_heif(bytes)
@@ -586,6 +607,12 @@ pub fn optimize(
             original_bytes: bytes.len(),
             converted_from: None,
         });
+    }
+
+    // A GIF is a palette format with frames and squint has no GIF encoder, so
+    // Strip above is the only mode that reads one.
+    if gif::is_gif(bytes) {
+        return Err(Error::ReadOnlyFormat { format: "GIF" });
     }
 
     if tiff::is_tiff(bytes) {

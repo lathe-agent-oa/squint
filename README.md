@@ -10,7 +10,7 @@ Working. JPEG and PNG are implemented. Builds are published on the releases page
 
 What runs today: a drag and drop window, five Finder Services entries, in-place replacement that preserves Finder tags, and a command line harness for measurement.
 
-What does not exist yet: WebP, AVIF, GIF and SVG input; a TIFF can only have its metadata removed; a HEIC can be shrunk only through the two entries that write beside the original, which write a JPEG; Balanced mode; further recipes beyond the email and social presets; WebP and AVIF output; PDF; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
+What does not exist yet: WebP, AVIF and SVG input; a GIF and a TIFF can only have their metadata removed; a HEIC can be shrunk only through the two entries that write beside the original, which write a JPEG; Balanced mode; further recipes beyond the email and social presets; WebP and AVIF output; PDF; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
 
 ## Why this exists
 
@@ -76,7 +76,7 @@ Drop images on the window, or right-click them in Finder and choose **Services**
 - **Squint: Shrink to a Quality Target** searches for the smallest file that still meets a perceptual score.
 - **Squint: Remove Location Data** takes out where and when a photograph was taken, and what took it, without touching the pixels.
 
-**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, and TIFF. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email and Shrink for Social do accept it.
+**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, and TIFF. The engine reads GIF for the same purpose, though no Finder entry offers it yet. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email and Shrink for Social do accept it.
 
 The entries show only when everything selected is a type that entry accepts. Select a folder, or mix a HEIC into a batch for the in-place entries, and Squint is absent from the Services menu with nothing to say why. That is Finder filtering on declared types, not a broken install.
 
@@ -92,7 +92,7 @@ Note that an already-open Get Info window will keep showing camera and location 
 
 PNG has an option JPEG does not: leaving the pixels alone, which is identical to the source and so meets any target by construction. A perceptual target on a PNG is never unreachable, only expensive: where no reduction in colours will meet it, the result is the lossless one. Measured on a 400x300 Display P3 screenshot, a target of 80 returns 55 KB scoring 88.3, smaller than fast mode's 61 KB. A target of 90 finds no reduction that qualifies, and the answer is the 121 KB lossless file.
 
-**Strip** removes metadata and nothing else, and is the only mode that reads TIFF; HEIC is read by every mode. The pixels are copied unchanged, so the result is identical to the input image, and only the container shrinks. An HDR gain map is kept, because it is part of the picture rather than a record of where it was taken.
+**Strip** removes metadata and nothing else, and is the only mode that reads GIF or TIFF; HEIC is read by every mode. From a GIF it takes out comments and every application block it was not told to keep, which is how XMP and anything a future encoder invents leave without being named. It keeps the frame timing, the animation loop count, any text a viewer draws into the frame, and the colour profile. The pixels are copied unchanged, so the result is identical to the input image, and only the container shrinks. An HDR gain map is kept, because it is part of the picture rather than a record of where it was taken.
 
 What it takes out includes **the date the photograph was taken**. That is deliberate, since when a photograph was taken discloses about as much as where. But it is worth naming, because it is the one field a photograph kept as documentation cannot do without, and it is not recoverable once the file has been overwritten. Strip a copy, not the master.
 
