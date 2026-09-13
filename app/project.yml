@@ -5,10 +5,23 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+packages:
+  # Pinned to one exact version, because the project file is generated and so
+  # Package.resolved is not committed with it: this line is the only thing
+  # standing between a release build and a version nobody reviewed. The
+  # revision the pin resolves to is recorded in docs/RELEASING.md, which is
+  # what a build can be checked against. Sparkle ships the tools that sign and
+  # list updates in the same distribution.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
+
 targets:
   Squint:
     type: application
     platform: macOS
+    dependencies:
+      - package: Sparkle
     sources:
       - path: Sources
       - path: ../design/squint.icns
@@ -46,6 +59,18 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: "14.0"
+        # Where Sparkle looks for the list of released versions, and the public
+        # half of the key every update archive is signed with. The private half
+        # is not on any build machine: it lives in 1Password and is fetched for
+        # the one command that signs a release.
+        #
+        # SUEnableAutomaticChecks is deliberately unset. Sparkle then asks once,
+        # on the first launch that would have checked, whether to check
+        # automatically. An application whose purpose is removing what a
+        # photograph discloses should ask before it starts talking to a server
+        # on a schedule.
+        SUFeedURL: https://raw.githubusercontent.com/mdws-org/squint/main/appcast.xml
+        SUPublicEDKey: 6FzlDrtCklzeHwPAZ097Oxu3WKoRrHk0VO3glbJptU0=
         LSApplicationCategoryType: public.app-category.graphics-design
         NSHighResolutionCapable: true
         # The Finder right-click entries, one per mode. Services are listed

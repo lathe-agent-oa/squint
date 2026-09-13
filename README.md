@@ -6,11 +6,11 @@ Most optimizers ask you to choose a quality setting once and then apply it to ev
 
 ## Status
 
-Working. JPEG and PNG are implemented. Builds are published on the releases page, but none of them is signed by a paid developer account, so macOS blocks the first launch.
+Working. JPEG and PNG are implemented. Builds are published on the releases page, but none of them is signed by a paid developer account, so macOS blocks the first launch. From 0.4.0 the application can update itself: Squint menu, Check for Updates. It asks once whether to check on a schedule, and every update it installs is verified against a key compiled into the build.
 
 What runs today: a drag and drop window, five Finder Services entries, in-place replacement that preserves Finder tags, and a command line harness for measurement.
 
-What does not exist yet: WebP, AVIF, GIF and SVG input; a TIFF can only have its metadata removed; a HEIC can be shrunk only through the two entries that write beside the original, which write a JPEG; Balanced mode; further recipes beyond the email and social presets; WebP and AVIF output; PDF; automatic updates; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
+What does not exist yet: WebP, AVIF, GIF and SVG input; a TIFF can only have its metadata removed; a HEIC can be shrunk only through the two entries that write beside the original, which write a JPEG; Balanced mode; further recipes beyond the email and social presets; WebP and AVIF output; PDF; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
 
 ## Why this exists
 

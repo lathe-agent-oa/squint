@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The list of released versions Squint offers to update to.
+
+  Empty until the first release that contains the updater, because a version
+  listed here must carry an EdDSA signature made with the key generated after
+  0.3.0, and the archives published before that have none. An empty channel is
+  a correct answer: Sparkle reads it and reports no update available.
+
+  Regenerated at release time, never edited by hand. docs/RELEASING.md has the
+  command.
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Squint</title>
+    <link>https://raw.githubusercontent.com/mdws-org/squint/main/appcast.xml</link>
+    <description>Updates to Squint, a macOS image optimizer.</description>
+    <language>en</language>
+  </channel>
+</rss>
