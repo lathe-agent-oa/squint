@@ -28,6 +28,14 @@ final class ServiceProvider: NSObject {
         run(pasteboard, preset: .email, error: error)
     }
 
+    @objc func shrinkForSocial(
+        _ pasteboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString>
+    ) {
+        run(pasteboard, preset: .social, error: error)
+    }
+
     @objc func optimizeQuality(
         _ pasteboard: NSPasteboard,
         userData: String?,
@@ -83,8 +91,9 @@ final class ServiceProvider: NSObject {
     /// a selection Finder was willing to pass along.
     ///
     /// HEIC and TIFF belong here because their location data can be removed.
-    /// Neither is offered to the two shrinking entries, which cannot re-encode
-    /// them, and the engine refuses them there with a message saying so.
+    /// TIFF is not offered to any shrinking entry, and HEIC only to the two
+    /// that write beside the original, since the engine writes JPEG and a JPEG
+    /// must not be written over a `.heic`.
     private static func isSupported(_ url: URL) -> Bool {
         ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"].contains(url.pathExtension.lowercased())
     }
