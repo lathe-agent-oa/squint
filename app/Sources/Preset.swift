@@ -30,6 +30,21 @@ struct Preset {
     /// to show.
     static let email = Preset(mode: .fast, maxDimension: 2048, suffix: "-email")
 
+    /// Shrink for social: 1440 pixels on the long edge, written beside the
+    /// original as `name-social.jpg`.
+    ///
+    /// Smaller than the email copy because the destinations are different.
+    /// Instagram shows a feed picture 1080 pixels wide, so 1440 is never
+    /// upscaled there; X displays up to 4096 but recompresses whatever it is
+    /// given; and a Nostr client recompresses nothing at all, so the file that
+    /// is posted is the file everyone downloads. Measured on a 5712x4284
+    /// photograph: 331 KB, about half the email copy.
+    ///
+    /// Re-encoding is what removes the location: a job-site photograph carries
+    /// the client's address in its EXIF, and every mode but Strip drops all of
+    /// it and keeps only the colour profile.
+    static let social = Preset(mode: .fast, maxDimension: 1440, suffix: "-social")
+
     /// Where this preset's output goes for a given input.
     ///
     /// The extension names what the engine wrote, not what the input was

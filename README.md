@@ -8,9 +8,9 @@ Most optimizers ask you to choose a quality setting once and then apply it to ev
 
 Working. JPEG and PNG are implemented. Builds are published on the releases page, but none of them is signed by a paid developer account, so macOS blocks the first launch.
 
-What runs today: a drag and drop window, four Finder Services entries, in-place replacement that preserves Finder tags, and a command line harness for measurement.
+What runs today: a drag and drop window, five Finder Services entries, in-place replacement that preserves Finder tags, and a command line harness for measurement.
 
-What does not exist yet: WebP, AVIF, GIF and SVG input; a TIFF can only have its metadata removed; a HEIC can be shrunk only through Shrink for Email, which writes a JPEG beside it; Balanced mode; further recipes beyond the email preset; WebP and AVIF output; PDF; automatic updates; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
+What does not exist yet: WebP, AVIF, GIF and SVG input; a TIFF can only have its metadata removed; a HEIC can be shrunk only through the two entries that write beside the original, which write a JPEG; Balanced mode; further recipes beyond the email and social presets; WebP and AVIF output; PDF; automatic updates; HDR gain maps through a re-encode, which Strip keeps but Fast and Quality report as removed.
 
 ## Why this exists
 
@@ -72,10 +72,11 @@ Drop images on the window, or right-click them in Finder and choose **Services**
 
 - **Squint: Shrink** does the everyday job. It encodes once at a fixed quality and measures nothing.
 - **Squint: Shrink for Email** accepts HEIC and writes `name-email.jpg`, resizing to 2048 pixels on the long edge. The original is not touched: the cap throws resolution away, and a photograph kept as documentation should not lose it because a copy was being made for an email. Measured on a 4032x3024 photograph, the copy is 129 KB, so about thirty fit under any provider's attachment limit.
+- **Squint: Shrink for Social** does the same at 1440 pixels and writes `name-social.jpg`. Smaller because the destinations are different: Instagram shows a feed picture 1080 pixels wide, X recompresses whatever it is given, and a Nostr client recompresses nothing at all, so what is posted is what everyone downloads. Measured on a 5712x4284 photograph, the copy is 331 KB.
 - **Squint: Shrink to a Quality Target** searches for the smallest file that still meets a perceptual score.
 - **Squint: Remove Location Data** takes out where and when a photograph was taken, and what took it, without touching the pixels.
 
-**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, and TIFF. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email does accept it.
+**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, and TIFF. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email and Shrink for Social do accept it.
 
 The entries show only when everything selected is a type that entry accepts. Select a folder, or mix a HEIC into a batch for the in-place entries, and Squint is absent from the Services menu with nothing to say why. That is Finder filtering on declared types, not a broken install.
 
