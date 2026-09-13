@@ -90,11 +90,11 @@ final class ServiceProvider: NSObject {
     /// A second filter behind Finder's own, since a service can be invoked with
     /// a selection Finder was willing to pass along.
     ///
-    /// HEIC and TIFF belong here because their location data can be removed.
-    /// TIFF is not offered to any shrinking entry, and HEIC only to the two
-    /// that write beside the original, since the engine writes JPEG and a JPEG
-    /// must not be written over a `.heic`.
+    /// HEIC, TIFF and GIF belong here because what they disclose can be
+    /// removed. Neither TIFF nor GIF is offered to any shrinking entry, and
+    /// HEIC only to the two that write beside the original, since the engine
+    /// writes JPEG and a JPEG must not be written over a file that is not one.
     private static func isSupported(_ url: URL) -> Bool {
-        ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"].contains(url.pathExtension.lowercased())
+        ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif"].contains(url.pathExtension.lowercased())
     }
 }

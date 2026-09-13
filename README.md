@@ -76,7 +76,7 @@ Drop images on the window, or right-click them in Finder and choose **Services**
 - **Squint: Shrink to a Quality Target** searches for the smallest file that still meets a perceptual score.
 - **Squint: Remove Location Data** takes out where and when a photograph was taken, and what took it, without touching the pixels.
 
-**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, and TIFF. The engine reads GIF for the same purpose, though no Finder entry offers it yet. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email and Shrink for Social do accept it.
+**Squint: Remove Location Data** also accepts HEIC, which is what an iPhone camera writes by default, TIFF, and GIF. The two in-place shrinking entries do not accept HEIC because squint writes JPEG, and a JPEG must not overwrite a `.heic`; Shrink for Email and Shrink for Social do accept it.
 
 The entries show only when everything selected is a type that entry accepts. Select a folder, or mix a HEIC into a batch for the in-place entries, and Squint is absent from the Services menu with nothing to say why. That is Finder filtering on declared types, not a broken install.
 
