@@ -1,9 +1,10 @@
 //! One way in for every picture the engine can re-encode.
 //!
-//! JPEG and PNG are decoded by the `image` crate; a HEIF is handed to the
-//! system's Image I/O, which is the only HEVC decoder on the machine. Whichever
-//! path a picture takes, it arrives here the same way: RGB8 in its own colour
-//! space, orientation baked in, capped to the long edge that was asked for.
+//! JPEG, PNG and WebP are decoded by the `image` crate; an SVG is rasterized by
+//! `resvg`; a HEIF is handed to the system's Image I/O, which is the only HEVC
+//! decoder on the machine. Whichever path a picture takes, it arrives here the
+//! same way: RGB8 in its own colour space, orientation baked in, capped to the
+//! long edge that was asked for.
 //! Both sides of a perceptual comparison must come through this one door, since
 //! a reference and a candidate that were decoded differently do not score
 //! against each other honestly.
@@ -21,7 +22,7 @@ pub struct Source {
     /// Whether a HEIF declared an HDR gain map. Always false for JPEG and PNG,
     /// whose maps the caller detects from the bytes.
     pub has_gain_map: bool,
-    /// Set when the output format will differ from the input's: `Some("HEIC")` for a HEIF source. None for JPEG and PNG.
+    /// Set when the output format will differ from the input's: `Some("HEIC")` or `Some("AVIF")` for an ISOBMFF source, `Some("SVG")` for a drawing, `Some("WebP")` for a WebP. None for JPEG and PNG.
     pub converted_from: Option<&'static str>,
 }
 
@@ -43,11 +44,17 @@ impl Source {
             });
         }
 
-        if crate::heif::is_heif(bytes) {
+        if crate::heif::is_isobmff_image(bytes) {
+            let container = crate::heif::container_name(bytes);
+            if crate::heif::is_image_sequence(bytes) {
+                return Err(Error::ReadOnlyFormat { format: container });
+            }
             #[cfg(target_os = "macos")]
             {
                 if !crate::heif::is_complete(bytes) {
-                    return Err(Error::Decode("this HEIC is cut short: its index points past the end of the file".into()));
+                    return Err(Error::Decode(format!(
+                        "this {container} is cut short: its index points past the end of the file"
+                    )));
                 }
                 let decoded = crate::imageio::decode(bytes, MAX_PIXELS)?;
                 let rgb_buf = image::RgbImage::from_raw(
@@ -68,13 +75,42 @@ impl Source {
                     icc: decoded.icc,
                     orientation: decoded.orientation,
                     has_gain_map: decoded.has_gain_map,
-                    converted_from: Some("HEIC"),
+                    converted_from: Some(container),
                 })
             }
             #[cfg(not(target_os = "macos"))]
             {
-                Err(Error::ReadOnlyFormat { format: "HEIC" })
+                Err(Error::ReadOnlyFormat { format: container })
             }
+        } else if crate::webp::is_webp(bytes) {
+            // An animated WebP decodes to its first frame in every decoder that
+            // would take it, and squint has no animated encoder, so the frames
+            // after that one would be gone with nothing to replace them. A GIF
+            // is refused for the same reason.
+            if crate::webp::is_animated(bytes) {
+                return Err(Error::ReadOnlyFormat { format: "WebP" });
+            }
+
+            let image = Image::decode_capped(bytes, max_dimension)?;
+            Ok(Source {
+                image,
+                // `extract_icc` reads JPEG APP2 segments and knows nothing of a
+                // RIFF chain, so the profile comes from the `ICCP` chunk
+                // instead. It has to come from somewhere: a wide-gamut picture
+                // that arrives untagged is treated as sRGB and the JPEG written
+                // beside it comes out flat.
+                icc: crate::webp::icc_profile(bytes),
+                // A WebP has no orientation field of its own; the only place a
+                // turn can be recorded is inside an `EXIF` chunk, and neither
+                // the decoder nor this module reads one. A picture converted
+                // from a WebP whose orientation lived in that chunk therefore
+                // arrives the way its pixels are stored rather than the way it
+                // is meant to be seen. Reading it means parsing a TIFF header
+                // out of the chunk, which nothing here does yet.
+                orientation: 1,
+                has_gain_map: false,
+                converted_from: Some("WebP"),
+            })
         } else {
             let mut image = Image::decode_capped(bytes, max_dimension)?;
             let icc = extract_icc(bytes);
@@ -207,6 +243,95 @@ mod tests {
             matches!(Source::open(truncated, None), Err(Error::Decode(_))),
             "a truncated HEIC must be refused"
         );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// AVIF decodes through the same Image I/O door as HEIC, so what this test
+    /// is for is the two things that differ: that the brand is recognised at
+    /// all, and that the picture is named AVIF rather than HEIC everywhere the
+    /// name is shown.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_macos_avif_decode_and_optimize() {
+        use std::process::Command;
+        use crate::Mode;
+
+        if !std::path::Path::new("/usr/bin/sips").exists() {
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "squint_avif_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let png_path = temp_dir.join("in.png");
+        let avif_path = temp_dir.join("out.avif");
+
+        // Noise for the same reason as the HEIC test: a smooth gradient codes
+        // small enough that the never-grow guard refuses the conversion, which
+        // would pass this test for the wrong reason.
+        let (w, h) = (640u32, 480u32);
+        let mut img_buf = image::RgbImage::new(w, h);
+        let mut seed = 0x9E37_79B9u32;
+        for y in 0..h {
+            for x in 0..w {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 29) as i16 - 3;
+                let px = |base: i16| (base + noise).clamp(0, 255) as u8;
+                img_buf.put_pixel(x, y, image::Rgb([px(x as u8 as i16), px(y as u8 as i16), px(200)]));
+            }
+        }
+        img_buf.save(&png_path).expect("save png");
+
+        let status = Command::new("/usr/bin/sips")
+            .args(["-s", "format", "avif"])
+            .arg(&png_path)
+            .arg("--out")
+            .arg(&avif_path)
+            .status()
+            .expect("execute sips");
+        assert!(status.success(), "sips failed to write an AVIF");
+
+        let avif_bytes = std::fs::read(&avif_path).expect("read avif");
+        assert!(crate::heif::is_avif(&avif_bytes), "sips wrote an AVIF brand");
+        assert!(
+            !crate::heif::is_heif(&avif_bytes),
+            "and it must not answer to HEIC as well"
+        );
+
+        let src = Source::open(&avif_bytes, None).expect("Source::open failed");
+        assert_eq!((src.image.width, src.image.height), (w as usize, h as usize));
+        assert_eq!(src.converted_from, Some("AVIF"));
+        assert_eq!(src.orientation, 1);
+
+        let at = |x: usize, y: usize| src.image.pixels[y * w as usize + x];
+        for (p, want) in [(at(10, 10), [10i16, 10, 200]), (at(10, 400), [10, 400u32 as u8 as i16, 200])] {
+            for c in 0..3 {
+                assert!((p[c] as i16 - want[c]).abs() <= 20, "pixel {p:?} is not near {want:?}");
+            }
+        }
+
+        let opt = crate::optimize(&avif_bytes, Mode::Fast, 80.0, 75.0, Some(70), 6, Some(150))
+            .expect("optimize failed");
+        assert!(opt.data.len() >= 2 && opt.data[0] == 0xFF && opt.data[1] == 0xD8, "a JPEG comes back");
+        assert_eq!(opt.converted_from, Some("AVIF"));
+
+        // The name has to reach the message too, not just the struct field.
+        let truncated = &avif_bytes[..avif_bytes.len() * 6 / 10];
+        match Source::open(truncated, None) {
+            Err(Error::Decode(msg)) => assert!(
+                msg.contains("AVIF"),
+                "a cut-short AVIF must be named as one, said: {msg}"
+            ),
+            Err(e) => panic!("a truncated AVIF must be refused as a decode error, got {e:?}"),
+            Ok(_) => panic!("a truncated AVIF must be refused"),
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
