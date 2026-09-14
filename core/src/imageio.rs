@@ -44,6 +44,8 @@ type CGImageSourceRef = *const c_void;
 type CGImageRef = *const c_void;
 type CGColorSpaceRef = *const c_void;
 type CGContextRef = *const c_void;
+type CFMutableDataRef = *const c_void;
+type CGImageDestinationRef = *const c_void;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -75,14 +77,35 @@ const K_CG_COLOR_SPACE_MODEL_RGB: i32 = 1;
 const K_CG_IMAGE_ALPHA_NONE_SKIP_LAST: u32 = 5;
 const K_CG_BITMAP_BYTE_ORDER_DEFAULT: u32 = 0;
 
+const K_CF_NUMBER_DOUBLE_TYPE: i32 = 13;
+const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
+    static kCFTypeDictionaryKeyCallBacks: c_void;
+    static kCFTypeDictionaryValueCallBacks: c_void;
+
     fn CFRelease(cf: CFTypeRef);
     fn CFDataCreate(allocator: CFTypeRef, bytes: *const u8, length: isize) -> CFDataRef;
+    fn CFDataCreateMutable(allocator: CFTypeRef, capacity: isize) -> CFMutableDataRef;
     fn CFDataGetLength(theData: CFDataRef) -> isize;
     fn CFDataGetBytePtr(theData: CFDataRef) -> *const u8;
     fn CFDictionaryGetValue(theDict: CFDictionaryRef, key: *const c_void) -> *const c_void;
+    fn CFDictionaryCreate(
+        allocator: CFTypeRef,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        numValues: isize,
+        keyCallBacks: *const c_void,
+        valueCallBacks: *const c_void,
+    ) -> CFDictionaryRef;
     fn CFNumberGetValue(number: CFNumberRef, theType: i32, valuePtr: *mut c_void) -> bool;
+    fn CFNumberCreate(allocator: CFTypeRef, theType: i32, valuePtr: *const c_void) -> CFNumberRef;
+    fn CFStringCreateWithCString(
+        allocator: CFTypeRef,
+        cStr: *const i8,
+        encoding: u32,
+    ) -> CFStringRef;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -92,6 +115,8 @@ extern "C" {
     fn CGColorSpaceGetModel(space: CGColorSpaceRef) -> i32;
     fn CGColorSpaceCreateWithName(name: CFStringRef) -> CGColorSpaceRef;
     fn CGColorSpaceCopyICCData(space: CGColorSpaceRef) -> CFDataRef;
+    fn CGColorSpaceCreateWithICCData(data: CFDataRef) -> CGColorSpaceRef;
+    fn CGBitmapContextCreateImage(context: CGContextRef) -> CGImageRef;
     fn CGImageGetWidth(image: CGImageRef) -> usize;
     fn CGImageGetHeight(image: CGImageRef) -> usize;
     fn CGImageGetColorSpace(image: CGImageRef) -> CGColorSpaceRef;
@@ -116,6 +141,20 @@ extern "C" {
     static kCGImagePropertyOrientation: CFStringRef;
     static kCGImageAuxiliaryDataTypeHDRGainMap: CFStringRef;
     static kCGImageAuxiliaryDataTypeISOGainMap: CFStringRef;
+    static kCGImageDestinationLossyCompressionQuality: CFStringRef;
+
+    fn CGImageDestinationCreateWithData(
+        data: CFMutableDataRef,
+        type_: CFStringRef,
+        count: usize,
+        options: CFDictionaryRef,
+    ) -> CGImageDestinationRef;
+    fn CGImageDestinationAddImage(
+        idst: CGImageDestinationRef,
+        image: CGImageRef,
+        properties: CFDictionaryRef,
+    );
+    fn CGImageDestinationFinalize(idst: CGImageDestinationRef) -> bool;
 
     fn CGImageSourceCreateWithData(data: CFDataRef, options: CFDictionaryRef) -> CGImageSourceRef;
     fn CGImageSourceGetCount(isrc: CGImageSourceRef) -> usize;
@@ -336,5 +375,115 @@ pub fn decode(bytes: &[u8], max_pixels: usize) -> Result<Decoded, Error> {
             orientation: orient_u16,
             has_gain_map,
         })
+    }
+}
+
+/// Encode as AVIF through the system, carrying the colour profile across.
+///
+/// The encoder is the system's for one reason: no pure-Rust AVIF encoder can
+/// embed an ICC profile. `ravif` has no colour handling at all, and the
+/// container writer beneath it, `avif-serialize`, writes only an `nclx` colour
+/// box — its `ColrBox` hardcodes the four bytes. Measured against a Display P3
+/// photograph, `ravif` produced roughly 30% smaller files than JPEG at the same
+/// perceptual score and every one of them was untagged, which is the failure
+/// this project exists to avoid: read as sRGB, a wide-gamut picture comes out
+/// flat. Image I/O writes a `colr` box of type `prof` with the profile inside.
+///
+/// The cost is that AVIF is written only on macOS, which is the same bargain
+/// already struck for reading HEIC.
+pub fn encode_avif(image: &crate::Image, quality: f32, icc: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    // Four bytes per pixel with the last ignored: the only RGB layout
+    // `CGBitmapContextCreate` accepts at eight bits per component.
+    let (w, h) = (image.width, image.height);
+    let mut rgbx = Vec::with_capacity(w * h * 4);
+    for px in &image.pixels {
+        rgbx.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
+    }
+
+    unsafe {
+        let profile_data = match icc {
+            Some(bytes) => Cf::wrap(CFDataCreate(ptr::null(), bytes.as_ptr(), bytes.len() as isize)),
+            None => None,
+        };
+        // A profile the system will not parse is not a reason to write an
+        // untagged file; sRGB is what an untagged picture is read as anyway,
+        // and saying so explicitly is the closest honest answer.
+        let space = profile_data
+            .as_ref()
+            .and_then(|d| Cf::wrap(CGColorSpaceCreateWithICCData(d.as_ptr() as CFDataRef)))
+            .or_else(|| Cf::wrap(CGColorSpaceCreateWithName(kCGColorSpaceSRGB)))
+            .ok_or_else(|| Error::Encode("Image I/O could not make a colour space".into()))?;
+
+        let ctx = Cf::wrap(CGBitmapContextCreate(
+            rgbx.as_mut_ptr() as *mut c_void,
+            w,
+            h,
+            8,
+            w * 4,
+            space.as_ptr() as CGColorSpaceRef,
+            K_CG_BITMAP_BYTE_ORDER_DEFAULT | K_CG_IMAGE_ALPHA_NONE_SKIP_LAST,
+        ))
+        .ok_or_else(|| Error::Encode("Image I/O could not make a bitmap context".into()))?;
+
+        let cg_image = Cf::wrap(CGBitmapContextCreateImage(ctx.as_ptr() as CGContextRef))
+            .ok_or_else(|| Error::Encode("Image I/O could not make a picture".into()))?;
+
+        let out_data = Cf::wrap(CFDataCreateMutable(ptr::null(), 0))
+            .ok_or_else(|| Error::Encode("Image I/O could not make an output buffer".into()))?;
+        let uti = Cf::wrap(CFStringCreateWithCString(
+            ptr::null(),
+            b"public.avif\0".as_ptr() as *const i8,
+            K_CF_STRING_ENCODING_UTF8,
+        ))
+        .ok_or_else(|| Error::Encode("Image I/O could not name the AVIF type".into()))?;
+
+        let dest = Cf::wrap(CGImageDestinationCreateWithData(
+            out_data.as_ptr() as CFMutableDataRef,
+            uti.as_ptr() as CFStringRef,
+            1,
+            ptr::null(),
+        ))
+        .ok_or_else(|| Error::Encode("this system cannot write AVIF".into()))?;
+
+        // Image I/O takes quality as a fraction, where the engine and every
+        // other encoder here count from zero to a hundred.
+        let fraction = (quality as f64 / 100.0).clamp(0.0, 1.0);
+        let number = Cf::wrap(CFNumberCreate(
+            ptr::null(),
+            K_CF_NUMBER_DOUBLE_TYPE,
+            &fraction as *const f64 as *const c_void,
+        ))
+        .ok_or_else(|| Error::Encode("Image I/O could not carry the quality".into()))?;
+
+        let keys = [kCGImageDestinationLossyCompressionQuality as *const c_void];
+        let values = [number.as_ptr() as *const c_void];
+        let props = Cf::wrap(CFDictionaryCreate(
+            ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const _ as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const _ as *const c_void,
+        ))
+        .ok_or_else(|| Error::Encode("Image I/O could not carry the options".into()))?;
+
+        CGImageDestinationAddImage(
+            dest.as_ptr() as CGImageDestinationRef,
+            cg_image.as_ptr() as CGImageRef,
+            props.as_ptr() as CFDictionaryRef,
+        );
+        // Finalize is the only place a refused encode is reported. Skipping the
+        // check would hand back whatever the buffer happened to hold, which for
+        // a refusal is nothing at all.
+        if !CGImageDestinationFinalize(dest.as_ptr() as CGImageDestinationRef) {
+            return Err(Error::Encode("Image I/O refused to write this AVIF".into()));
+        }
+
+        let len = CFDataGetLength(out_data.as_ptr() as CFDataRef) as usize;
+        if len == 0 {
+            return Err(Error::Encode("Image I/O wrote an empty AVIF".into()));
+        }
+        let ptr = CFDataGetBytePtr(out_data.as_ptr() as CFDataRef);
+        Ok(std::slice::from_raw_parts(ptr, len).to_vec())
     }
 }
