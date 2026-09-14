@@ -90,11 +90,19 @@ final class ServiceProvider: NSObject {
     /// A second filter behind Finder's own, since a service can be invoked with
     /// a selection Finder was willing to pass along.
     ///
-    /// HEIC, TIFF and GIF belong here because what they disclose can be
-    /// removed. Neither TIFF nor GIF is offered to any shrinking entry, and
-    /// HEIC only to the two that write beside the original, since the engine
-    /// writes JPEG and a JPEG must not be written over a file that is not one.
+    /// HEIC, AVIF, WebP, TIFF and GIF belong here because what they disclose
+    /// can be removed. TIFF and GIF are offered to no shrinking entry, and the
+    /// formats the engine can only re-encode as JPEG — HEIC, AVIF, WebP and
+    /// SVG — only to the two that write beside the original, since a JPEG must
+    /// not be written over a file that is not one.
+    ///
+    /// This list and the `NSSendFileTypes` in `project.yml` have to be changed
+    /// together. Finder decides from the type declarations whether the menu
+    /// item appears at all; this decides whether the work is done once it has.
+    /// A format in one and not the other either never shows up or shows up and
+    /// refuses.
     private static func isSupported(_ url: URL) -> Bool {
-        ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif"].contains(url.pathExtension.lowercased())
+        ["jpg", "jpeg", "png", "heic", "heif", "avif", "webp", "svg", "tif", "tiff", "gif"]
+            .contains(url.pathExtension.lowercased())
     }
 }

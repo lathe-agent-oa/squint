@@ -132,10 +132,11 @@ final class JobQueue: ObservableObject {
                 // Judged from the bytes, not the name: a JPEG that arrived
                 // as `.heic` is a JPEG and may be replaced in place as one,
                 // and a HEIC named `.jpg` is still a HEIC. The engine writes
-                // JPEG, so the only place a HEIC may go is beside itself.
-                let besideOnly = "a HEIC can only be shrunk beside the original; use Squint: Shrink for Email"
-                let isHeif = input.count >= 12 && input[4..<8].elementsEqual("ftyp".utf8)
-                if isHeif && preset.suffix == nil && preset.mode != .strip {
+                // JPEG for every format it cannot re-encode as itself, so the
+                // only place such a picture may go is beside itself.
+                let besideOnly = "this picture is re-encoded as a JPEG, so it can only be written beside the original; use Squint: Shrink for Email"
+                let isIsobmff = input.count >= 12 && input[4..<8].elementsEqual("ftyp".utf8)
+                if isIsobmff && preset.suffix == nil && preset.mode != .strip {
                     return .failed(besideOnly)
                 }
                 let result = try Engine.optimize(
