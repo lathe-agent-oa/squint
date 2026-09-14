@@ -101,11 +101,18 @@ targets:
               default: "Squint: Shrink for Email"
             NSMessage: shrinkForEmail
             NSPortName: Squint
+            # AVIF needs naming in its own right: it does NOT conform to
+            # public.heif, and neither does public.heic — both conform to
+            # public.heif-standard instead, so the two entries above cover
+            # nothing else. Measured with UTTypeConformsTo, not assumed.
             NSSendFileTypes:
               - public.jpeg
               - public.png
               - public.heic
               - public.heif
+              - public.avif
+              - org.webmproject.webp
+              - public.svg-image
             NSRequiredContext:
               NSApplicationIdentifier: com.apple.finder
               NSTextContent: FilePath
@@ -119,6 +126,9 @@ targets:
               - public.png
               - public.heic
               - public.heif
+              - public.avif
+              - org.webmproject.webp
+              - public.svg-image
             NSRequiredContext:
               NSApplicationIdentifier: com.apple.finder
               NSTextContent: FilePath
@@ -141,12 +151,19 @@ targets:
             NSSendFileTypes:
               - public.jpeg
               - public.png
-              # HEIC is what an iPhone camera writes, TIFF is what a scanner
-              # does, and a GIF carries whatever comment or application block
-              # its encoder wrote. Removing what they disclose is the one thing
-              # squint can do to any of them, since it re-encodes none of them.
+              # HEIC is what an iPhone camera writes, AVIF and WebP are what a
+              # browser hands you, TIFF is what a scanner does, and a GIF
+              # carries whatever comment or application block its encoder
+              # wrote. Removing what they disclose is the one thing squint can
+              # do to any of them, since it re-encodes none of them as itself.
+              #
+              # SVG is deliberately absent: a drawing has no metadata block
+              # this strips, and the engine has no strip path for one, so
+              # offering it would put an entry in the menu that always fails.
               - public.heic
               - public.heif
+              - public.avif
+              - org.webmproject.webp
               - public.tiff
               - com.compuserve.gif
             NSRequiredContext:
