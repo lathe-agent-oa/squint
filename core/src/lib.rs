@@ -673,6 +673,14 @@ pub fn optimize(
         return Err(Error::ReadOnlyFormat { format: "WebP" });
     }
 
+    // The ISOBMFF spelling of the same thing. `Source::open` refuses these too,
+    // but the refusal belongs beside the other formats that cannot be
+    // re-encoded, where a reader looking for what squint will not convert finds
+    // the whole list in one place.
+    if heif::is_image_sequence(bytes) {
+        return Err(Error::ReadOnlyFormat { format: heif::container_name(bytes) });
+    }
+
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let effort = match mode {
             Mode::Quality => png::Effort::Thorough,

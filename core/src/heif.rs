@@ -61,18 +61,27 @@ pub fn is_isobmff_image(bytes: &[u8]) -> bool {
     is_heif(bytes) || is_avif(bytes)
 }
 
-/// Whether this AVIF holds a sequence of pictures rather than one.
+/// Brands whose files hold a sequence of pictures rather than one.
 ///
-/// `avis` is the image-sequence brand, the animated counterpart of `avif`.
-/// Image I/O will decode one to its primary frame, which would quietly turn a
-/// sequence into a single JPEG — the loss an animated WebP is refused to avoid,
+/// `avis` is the AVIF image sequence, the animated counterpart of `avif`.
+/// `msf1` is its HEIF equivalent, and `hevc` and `hevx` are the HEVC-coded
+/// sequences that sit beside the `heic` and `heix` single images. The naming
+/// invites the mistake: `heic` is one picture and `hevc` is many, a letter
+/// apart.
+const SEQUENCE_BRANDS: [&[u8; 4]; 4] = [b"avis", b"msf1", b"hevc", b"hevx"];
+
+/// Whether this container holds a sequence of pictures rather than one.
+///
+/// Image I/O will decode a sequence to its primary frame, which would quietly
+/// turn it into a single JPEG — the loss an animated WebP is refused to avoid,
 /// arriving by another door. A sequence is refused for re-encoding; its
 /// metadata can still be stripped, which leaves the frames where they are.
 pub fn is_image_sequence(bytes: &[u8]) -> bool {
     if !has_ftyp(bytes) {
         return false;
     }
-    &bytes[8..12] == b"avis" || compatible_brands(bytes).any(|b| b == b"avis")
+    let sequence = |b: &[u8]| SEQUENCE_BRANDS.iter().any(|s| s[..] == *b);
+    sequence(&bytes[8..12]) || compatible_brands(bytes).any(sequence)
 }
 
 /// The name for the container, for a message and for `converted_from`.
@@ -559,6 +568,27 @@ mod tests {
         let mut truncated = ftyp(b"mif1", &[b"avif"]);
         truncated[0..4].copy_from_slice(&be32(8));
         assert!(!is_avif(&truncated));
+    }
+
+    #[test]
+    fn every_sequence_brand_is_refused_not_only_the_avif_one() {
+        // `heic` is one picture and `hevc` is many, one letter apart, and both
+        // were in the brand list this reads as a still.
+        for brand in [b"msf1", b"hevc", b"hevx", b"avis"] {
+            let seq = ftyp(brand, &[b"mif1"]);
+            assert!(is_image_sequence(&seq), "{} is a sequence", String::from_utf8_lossy(brand));
+        }
+        for brand in [b"heic", b"heix", b"heim", b"heis", b"mif1", b"miaf"] {
+            let single = ftyp(brand, &[b"mif1"]);
+            assert!(
+                !is_image_sequence(&single),
+                "{} holds one picture",
+                String::from_utf8_lossy(brand)
+            );
+        }
+        // Declared only among the compatible brands, which is how a real one
+        // is often written.
+        assert!(is_image_sequence(&ftyp(b"mif1", &[b"msf1"])));
     }
 
     #[test]
