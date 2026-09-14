@@ -91,7 +91,9 @@ impl Source {
                 return Err(Error::ReadOnlyFormat { format: "WebP" });
             }
 
-            let image = Image::decode_capped(bytes, max_dimension)?;
+            let mut image = Image::decode_capped(bytes, max_dimension)?;
+            let orientation = crate::webp::orientation(bytes);
+            image.apply_orientation(orientation);
             Ok(Source {
                 image,
                 // `extract_icc` reads JPEG APP2 segments and knows nothing of a
@@ -100,14 +102,7 @@ impl Source {
                 // that arrives untagged is treated as sRGB and the JPEG written
                 // beside it comes out flat.
                 icc: crate::webp::icc_profile(bytes),
-                // A WebP has no orientation field of its own; the only place a
-                // turn can be recorded is inside an `EXIF` chunk, and neither
-                // the decoder nor this module reads one. A picture converted
-                // from a WebP whose orientation lived in that chunk therefore
-                // arrives the way its pixels are stored rather than the way it
-                // is meant to be seen. Reading it means parsing a TIFF header
-                // out of the chunk, which nothing here does yet.
-                orientation: 1,
+                orientation,
                 has_gain_map: false,
                 converted_from: Some("WebP"),
             })

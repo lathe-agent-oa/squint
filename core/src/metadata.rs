@@ -70,41 +70,60 @@ pub fn extract_orientation(jpeg: &[u8]) -> u16 {
         if marker != 0xE1 || !payload.starts_with(EXIF) {
             continue;
         }
-        let tiff = &payload[EXIF.len()..];
-        if tiff.len() < 8 {
-            continue;
-        }
-        let big = match &tiff[0..2] {
-            b"MM" => true,
-            b"II" => false,
-            _ => continue,
-        };
-        let u16at = |b: &[u8], o: usize| -> u16 {
-            let (x, y) = (b[o], b[o + 1]);
-            if big { u16::from_be_bytes([x, y]) } else { u16::from_le_bytes([x, y]) }
-        };
-        let u32at = |b: &[u8], o: usize| -> u32 {
-            let s = [b[o], b[o + 1], b[o + 2], b[o + 3]];
-            if big { u32::from_be_bytes(s) } else { u32::from_le_bytes(s) }
-        };
-
-        let ifd = u32at(tiff, 4) as usize;
-        if ifd + 2 > tiff.len() {
-            continue;
-        }
-        let count = u16at(tiff, ifd) as usize;
-        for e in 0..count {
-            let off = ifd + 2 + e * 12;
-            if off + 12 > tiff.len() {
-                break;
-            }
-            if u16at(tiff, off) == 0x0112 {
-                // Value is a SHORT stored in the first two bytes of the value field.
-                return u16at(tiff, off + 8);
-            }
+        if let Some(orientation) = orientation_in_tiff(&payload[EXIF.len()..]) {
+            return orientation;
         }
     }
     1
+}
+
+/// Read the orientation tag out of a bare TIFF block.
+///
+/// A JPEG carries one inside an APP1 segment behind an `Exif\0\0` marker; a
+/// WebP carries the same block in an `EXIF` chunk, usually with no marker at
+/// all. The block itself is identical either way, so the walk lives here and
+/// each format hands over the bytes it found.
+///
+/// `None` distinguishes "this is not a TIFF block, or it has no orientation"
+/// from an orientation of 1, which is a picture that is already upright.
+pub(crate) fn orientation_in_tiff(tiff: &[u8]) -> Option<u16> {
+    // Some writers put the JPEG marker on the WebP chunk too. Skipping it here
+    // costs nothing and saves the caller from having to know.
+    const EXIF: &[u8] = b"Exif\0\0";
+    let tiff = tiff.strip_prefix(EXIF).unwrap_or(tiff);
+    if tiff.len() < 8 {
+        return None;
+    }
+    let big = match &tiff[0..2] {
+        b"MM" => true,
+        b"II" => false,
+        _ => return None,
+    };
+    let u16at = |b: &[u8], o: usize| -> u16 {
+        let (x, y) = (b[o], b[o + 1]);
+        if big { u16::from_be_bytes([x, y]) } else { u16::from_le_bytes([x, y]) }
+    };
+    let u32at = |b: &[u8], o: usize| -> u32 {
+        let s = [b[o], b[o + 1], b[o + 2], b[o + 3]];
+        if big { u32::from_be_bytes(s) } else { u32::from_le_bytes(s) }
+    };
+
+    let ifd = u32at(tiff, 4) as usize;
+    if ifd + 2 > tiff.len() {
+        return None;
+    }
+    let count = u16at(tiff, ifd) as usize;
+    for e in 0..count {
+        let off = ifd + 2 + e * 12;
+        if off + 12 > tiff.len() {
+            break;
+        }
+        if u16at(tiff, off) == 0x0112 {
+            // Value is a SHORT stored in the first two bytes of the value field.
+            return Some(u16at(tiff, off + 8));
+        }
+    }
+    None
 }
 
 

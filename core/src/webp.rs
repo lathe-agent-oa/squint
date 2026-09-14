@@ -163,6 +163,26 @@ pub fn icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
     icc
 }
 
+/// Which way up this WebP says it goes, 1 when it does not say.
+///
+/// A WebP has no orientation field of its own. The only place a turn can be
+/// recorded is the TIFF block inside its `EXIF` chunk, which is the same block
+/// a JPEG keeps in APP1, so the tag is read by the same walk.
+///
+/// Strip removes that chunk, and is right to: the turn has already been applied
+/// to the pixels by then, and what remains of the block identifies a camera.
+pub fn orientation(bytes: &[u8]) -> u16 {
+    let mut found = None;
+    let walked = walk(bytes, |chunk| {
+        if &chunk.id == b"EXIF" && found.is_none() {
+            found = crate::metadata::orientation_in_tiff(chunk.payload);
+        }
+    });
+    // A file this module cannot read has not said which way up it goes, and a
+    // guess would turn a picture that was already upright.
+    walked.and(found).unwrap_or(1)
+}
+
 /// One chunk of the chain: what it is, what it carries, and where it sits.
 struct Chunk<'a> {
     id: [u8; 4],
@@ -485,6 +505,57 @@ mod tests {
         let mut lying = tagged.clone();
         lying[4..8].copy_from_slice(&4096u32.to_le_bytes());
         assert_eq!(icc_profile(&lying), None);
+    }
+
+    #[test]
+    fn the_turn_recorded_in_an_exif_chunk_is_read() {
+        /// A TIFF block holding one field: the orientation.
+        fn tiff(orientation: u16, big: bool) -> Vec<u8> {
+            let mut t = Vec::new();
+            let u16b = |v: u16| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+            let u32b = |v: u32| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+            t.extend_from_slice(if big { b"MM" } else { b"II" });
+            t.extend_from_slice(&u16b(42));
+            t.extend_from_slice(&u32b(8)); // the first entry sits at eight
+            t.extend_from_slice(&u16b(1)); // one field
+            t.extend_from_slice(&u16b(0x0112)); // orientation
+            t.extend_from_slice(&u16b(3)); // SHORT
+            t.extend_from_slice(&u32b(1));
+            t.extend_from_slice(&u16b(orientation));
+            t.extend_from_slice(&u16b(0)); // the rest of the four byte value
+            t
+        }
+
+        for big in [true, false] {
+            let turned = webp(&[
+                (b"VP8X", &[0u8; 10]),
+                (b"VP8 ", &[0xAA; 16]),
+                (b"EXIF", &tiff(6, big)),
+            ]);
+            assert_eq!(orientation(&turned), 6, "byte order should not matter");
+        }
+
+        // Some writers put the JPEG marker on the chunk as well.
+        let mut prefixed = b"Exif\0\0".to_vec();
+        prefixed.extend_from_slice(&tiff(8, true));
+        let marked = webp(&[(b"VP8 ", &[0xAA; 16]), (b"EXIF", &prefixed)]);
+        assert_eq!(orientation(&marked), 8);
+
+        // No chunk, nothing to say, and a picture that is already upright.
+        let plain = webp(&[(b"VP8 ", &[0xAA; 16])]);
+        assert_eq!(orientation(&plain), 1);
+
+        // A file the walk cannot read must not have a turn guessed for it.
+        let mut lying = webp(&[(b"VP8 ", &[0xAA; 16]), (b"EXIF", &tiff(6, true))]);
+        lying[4..8].copy_from_slice(&4096u32.to_le_bytes());
+        assert_eq!(orientation(&lying), 1, "a malformed file says nothing");
+
+        // And the chunk still leaves in a strip: by then the turn is in the
+        // pixels and what remains of the block names a camera.
+        let turned = webp(&[(b"VP8 ", &[0xAA; 16]), (b"EXIF", &tiff(6, true))]);
+        let (out, wiped) = strip_webp(&turned).expect("a frame is present");
+        assert!(wiped > 0);
+        assert_eq!(orientation(&out), 1, "the tag went with the chunk");
     }
 
     #[test]
