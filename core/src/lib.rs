@@ -306,15 +306,6 @@ pub struct SearchResult {
     pub probes: Vec<Probe>,
 }
 
-/// Predict a starting quality for a target score.
-///
-/// Fitted against measured mozjpeg curves. The exponent lands within 1% of the
-/// model oavif uses for libaom, so the shape transfers across codecs even though
-/// the constant does not.
-fn predict_quality(target: f64) -> f32 {
-    (8.30 * (0.0285 * target).exp()).clamp(30.0, 98.0) as f32
-}
-
 /// Find the smallest JPEG that still scores at or above `target`.
 ///
 /// The search collapses its bracket rather than exiting as soon as a probe lands
@@ -336,7 +327,98 @@ fn predict_quality(target: f64) -> f32 {
 /// by mode on the same file.
 pub type SizeToBeat = Option<usize>;
 
+/// What the engine writes, which is not always what it read.
+///
+/// JPEG is the default and the only thing the application asks for. The other
+/// two are reachable from the command line, where a conversion is asked for
+/// deliberately rather than inferred from the file that arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Jpeg,
+    /// Written by the system rather than a crate. No pure-Rust AVIF encoder can
+    /// embed an ICC profile, and a wide-gamut picture without one is read as
+    /// sRGB and comes out flat.
+    Avif,
+    /// Lossless, because `image-webp` has no other kind. Suited to what a PNG
+    /// suits and wrong for photographs, which the never-grow rule refuses on
+    /// its own without this having to guess what a picture is of.
+    WebpLossless,
+}
+
+impl OutputFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Jpeg => "jpg",
+            OutputFormat::Avif => "avif",
+            OutputFormat::WebpLossless => "webp",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "jpeg" | "jpg" => Some(OutputFormat::Jpeg),
+            "avif" => Some(OutputFormat::Avif),
+            "webp" => Some(OutputFormat::WebpLossless),
+            _ => None,
+        }
+    }
+
+    /// Whether a quality search means anything for this format.
+    ///
+    /// A lossless encode has one outcome, so probing it would measure the same
+    /// file repeatedly and report a score of 100 every time.
+    fn searchable(self) -> bool {
+        !matches!(self, OutputFormat::WebpLossless)
+    }
+
+    fn encode(self, image: &Image, quality: f32, icc: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+        match self {
+            OutputFormat::Jpeg => encode_jpeg(image, quality, icc),
+            OutputFormat::WebpLossless => webp::encode_lossless(image, icc),
+            #[cfg(target_os = "macos")]
+            OutputFormat::Avif => imageio::encode_avif(image, quality, icc),
+            #[cfg(not(target_os = "macos"))]
+            OutputFormat::Avif => Err(Error::ReadOnlyFormat { format: "AVIF" }),
+        }
+    }
+
+    /// Read an encode back for scoring, through whatever can read it.
+    ///
+    /// The `image` crate has no AVIF decoder here, so that one goes back
+    /// through the same door the engine reads an AVIF by.
+    fn decode_back(self, data: &[u8]) -> Result<Image, Error> {
+        match self {
+            OutputFormat::Avif => Ok(Source::open(data, None)?.image),
+            _ => Image::decode(data),
+        }
+    }
+
+    /// Where to open the search for a given target.
+    ///
+    /// Each curve is fitted to its own encoder: the JPEG one to mozjpeg, the
+    /// AVIF one to Image I/O measured on a 12 megapixel photograph. The opener
+    /// only decides where to probe first — the bracket spans the whole range
+    /// either way — so a curve that is off costs probes rather than accuracy.
+    fn predict_quality(self, target: f64) -> f32 {
+        match self {
+            OutputFormat::Avif => (1.587 * target - 44.4).clamp(30.0, 98.0) as f32,
+            _ => (8.30 * (0.0285 * target).exp()).clamp(30.0, 98.0) as f32,
+        }
+    }
+}
+
 pub fn search(
+    reference: &Image,
+    target: f64,
+    max_probes: usize,
+    original_bytes: SizeToBeat,
+    icc: Option<&[u8]>,
+) -> Result<SearchResult, Error> {
+    search_as(OutputFormat::Jpeg, reference, target, max_probes, original_bytes, icc)
+}
+
+pub fn search_as(
+    format: OutputFormat,
     reference: &Image,
     target: f64,
     max_probes: usize,
@@ -360,7 +442,7 @@ pub fn search(
     // on the bounds keeps the speed and drops the false refusal.
     let mut lo = 20.0f32;
     let mut hi = 98.0f32;
-    let mut next = predict_quality(target);
+    let mut next = format.predict_quality(target);
 
     for _ in 0..max_probes {
         let mut q = next.round().clamp(lo, hi);
@@ -375,8 +457,8 @@ pub fn search(
             q = mid;
         }
 
-        let data = encode_jpeg(reference, q, icc)?;
-        let decoded = Image::decode(&data)?;
+        let data = format.encode(reference, q, icc)?;
+        let decoded = format.decode_back(&data)?;
         let s = score(reference, &decoded)?;
         let probe = Probe { quality: q, score: s, bytes: data.len() };
         probes.push(probe.clone());
@@ -507,6 +589,35 @@ pub struct Optimized {
 /// call it, so the application cannot drift away from what the CLI measures.
 pub fn optimize(
     bytes: &[u8],
+    mode: Mode,
+    target: f64,
+    fixed_quality: f32,
+    png_min_quality: Option<u8>,
+    max_probes: usize,
+    max_dimension: Option<u32>,
+) -> Result<Optimized, Error> {
+    optimize_as(
+        bytes,
+        OutputFormat::Jpeg,
+        mode,
+        target,
+        fixed_quality,
+        png_min_quality,
+        max_probes,
+        max_dimension,
+    )
+}
+
+/// Optimize, writing a format the caller names.
+///
+/// `optimize` is this with JPEG, which is what the application asks for and all
+/// it has ever asked for. Naming another format is a conversion the caller has
+/// decided on, so the result goes beside the original like any other conversion
+/// and nothing is replaced.
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_as(
+    bytes: &[u8],
+    format: OutputFormat,
     mode: Mode,
     target: f64,
     fixed_quality: f32,
@@ -681,7 +792,9 @@ pub fn optimize(
         return Err(Error::ReadOnlyFormat { format: heif::container_name(bytes) });
     }
 
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+    // A PNG asked for as a PNG stays one. A PNG asked for as something else is
+    // a conversion like any other and goes through the decode path below.
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) && format == OutputFormat::Jpeg {
         let effort = match mode {
             Mode::Quality => png::Effort::Thorough,
             // Strip returns before reaching here; Fast must not pay the
@@ -708,22 +821,55 @@ pub fn optimize(
     }
 
     let src = Source::open(bytes, max_dimension)?;
+    // A format the caller named is a conversion just as much as a HEIC arriving
+    // for re-encoding is, and the file it produces is a different kind of thing
+    // from the one it read. Naming what it came from needs the input's own name,
+    // which `Source` supplies only for the formats it converts; a JPEG and a PNG
+    // are read as themselves and say nothing.
+    let converted_from = src.converted_from.or(if format == OutputFormat::Jpeg {
+        None
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("PNG")
+    } else {
+        Some("JPEG")
+    });
     // Nothing is being replaced when the format changes, so there is no size
     // to beat. Decided once, here, so that every mode answers the same way.
-    let size_to_beat: SizeToBeat = src.converted_from.is_none().then_some(bytes.len());
+    //
+    // A format the caller named is the exception. A HEIC or an SVG is converted
+    // because it cannot be re-encoded as itself, and a raster of a drawing is
+    // legitimately larger than the few hundred bytes the drawing took; asking
+    // for AVIF or WebP is asking for a smaller file of the same picture, and
+    // one that came out larger did not do what was asked. This is what refuses
+    // a photograph encoded as lossless WebP, without anything here having to
+    // guess what a picture is of.
+    let size_to_beat: SizeToBeat = if format != OutputFormat::Jpeg {
+        Some(bytes.len())
+    } else {
+        converted_from.is_none().then_some(bytes.len())
+    };
     let image = src.image;
     let icc = src.icc;
 
     let (data, score, probes) = match mode {
         // Strip is handled above and never reaches this match.
         Mode::Fast | Mode::Strip => {
-            (encode_jpeg(&image, fixed_quality, icc.as_deref())?, None, Vec::new())
+            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new())
+        }
+        // A lossless format has one outcome, so there is nothing to search for:
+        // probing would encode the same file repeatedly and score it 100 each
+        // time. It is encoded once and reported without a score, because a
+        // number that is always the same measures nothing.
+        Mode::Quality if !format.searchable() => {
+            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new())
         }
         Mode::Quality => {
-            if target > JPEG_SCORE_CEILING {
+            // The ceiling is JPEG's. AVIF was measured past it, so applying the
+            // same number to both would refuse a target this encoder can reach.
+            if format == OutputFormat::Jpeg && target > JPEG_SCORE_CEILING {
                 return Err(Error::Unreachable { best_score: JPEG_SCORE_CEILING });
             }
-            let r = search(&image, target, max_probes, size_to_beat, icc.as_deref())?;
+            let r = search_as(format, &image, target, max_probes, size_to_beat, icc.as_deref())?;
             (r.data, Some(r.chosen.score), r.probes)
         }
     };
@@ -760,13 +906,60 @@ pub fn optimize(
         hdr,
         quantized: false,
         original_bytes: bytes.len(),
-        converted_from: src.converted_from,
+        converted_from,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_format_is_named_by_what_it_writes() {
+        for (name, want) in [
+            ("jpeg", OutputFormat::Jpeg),
+            ("jpg", OutputFormat::Jpeg),
+            ("avif", OutputFormat::Avif),
+            ("webp", OutputFormat::WebpLossless),
+        ] {
+            assert_eq!(OutputFormat::parse(name), Some(want), "{name} should be understood");
+        }
+        // A format squint can read but not write must not be accepted here: the
+        // flag would be taken and then quietly produce something else.
+        for name in ["tiff", "gif", "heic", "png", "", "AVIF"] {
+            assert_eq!(OutputFormat::parse(name), None, "{name} is not written");
+        }
+
+        assert_eq!(OutputFormat::Jpeg.extension(), "jpg");
+        assert_eq!(OutputFormat::Avif.extension(), "avif");
+        assert_eq!(OutputFormat::WebpLossless.extension(), "webp");
+    }
+
+    #[test]
+    fn a_lossless_format_is_not_searched() {
+        // Probing a lossless encoder measures the same file over and over and
+        // scores it 100 every time, so the search must not be entered at all.
+        assert!(!OutputFormat::WebpLossless.searchable());
+        assert!(OutputFormat::Jpeg.searchable());
+        assert!(OutputFormat::Avif.searchable());
+    }
+
+    #[test]
+    fn each_encoder_opens_the_search_on_its_own_curve() {
+        // The opener only decides where to probe first, but a curve fitted to
+        // the wrong encoder wastes the probe budget. AVIF needs a markedly
+        // higher setting than JPEG for the same score, measured on a 12
+        // megapixel photograph, and the two must not share a prediction.
+        let jpeg = OutputFormat::Jpeg.predict_quality(80.0);
+        let avif = OutputFormat::Avif.predict_quality(80.0);
+        assert!(avif > jpeg, "AVIF opened at {avif}, JPEG at {jpeg}");
+        for f in [OutputFormat::Jpeg, OutputFormat::Avif] {
+            for target in [10.0, 50.0, 80.0, 95.0, 200.0] {
+                let q = f.predict_quality(target);
+                assert!((30.0..=98.0).contains(&q), "{f:?} opened at {q} for {target}");
+            }
+        }
+    }
 
     /// A HEIC now decodes for re-encoding; a TIFF still does not, and must keep
     /// saying so in its own words rather than through a decoder's complaint.

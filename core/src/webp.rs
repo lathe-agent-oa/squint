@@ -183,6 +183,39 @@ pub fn orientation(bytes: &[u8]) -> u16 {
     walked.and(found).unwrap_or(1)
 }
 
+/// Encode as a lossless WebP, carrying the colour profile across.
+///
+/// Lossless is the only kind this can write: `image-webp` has no lossy encoder,
+/// and adding one would mean libwebp and the first C dependency in the tree. So
+/// this is for the pictures lossless suits — screenshots, drawings, anything
+/// with flat colour, the sort of thing that is a PNG today — and a photograph
+/// encoded this way comes out larger than the JPEG it started as. Nothing here
+/// tries to tell the two apart: the never-grow rule already refuses a result
+/// bigger than its source, which is the same answer arrived at honestly.
+pub fn encode_lossless(image: &crate::Image, icc: Option<&[u8]>) -> Result<Vec<u8>, crate::Error> {
+    use image::ImageEncoder;
+
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
+    if let Some(profile) = icc {
+        // Not ignored. The profile is the reason this project exists rather
+        // than any other optimizer, so an encoder that cannot carry one must
+        // say so instead of quietly writing an untagged file.
+        encoder
+            .set_icc_profile(profile.to_vec())
+            .map_err(|e| crate::Error::Encode(format!("WebP could not carry the colour profile: {e}")))?;
+    }
+    encoder
+        .write_image(
+            &image.flat(),
+            image.width as u32,
+            image.height as u32,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| crate::Error::Encode(e.to_string()))?;
+    Ok(out)
+}
+
 /// One chunk of the chain: what it is, what it carries, and where it sits.
 struct Chunk<'a> {
     id: [u8; 4],
@@ -556,6 +589,39 @@ mod tests {
         let (out, wiped) = strip_webp(&turned).expect("a frame is present");
         assert!(wiped > 0);
         assert_eq!(orientation(&out), 1, "the tag went with the chunk");
+    }
+
+    #[test]
+    fn a_lossless_webp_is_a_webp_keeps_the_profile_and_changes_no_pixel() {
+        const PROFILE: &[u8] = b"not a real profile, but these bytes have to travel";
+        let mut px = Vec::with_capacity(64 * 48 * 3);
+        for y in 0..48u8 {
+            for x in 0..64u8 {
+                // Flat blocks, which is what lossless is for and what makes the
+                // pixel comparison below meaningful rather than lucky.
+                px.extend_from_slice(&[if (x / 8 + y / 8) % 2 == 0 { 20 } else { 200 }, y, x]);
+            }
+        }
+        let img = crate::Image::from_rgb8(&px, 64, 48);
+
+        let out = encode_lossless(&img, Some(PROFILE)).expect("a lossless WebP");
+        assert!(is_webp(&out), "what came back is not a WebP");
+        assert_eq!(
+            icc_profile(&out).as_deref(),
+            Some(PROFILE),
+            "the colour profile did not survive the encode"
+        );
+
+        // Lossless has to mean it. A decode that differs anywhere means the
+        // encoder is not doing what its name says.
+        let back = crate::Image::decode(&out).expect("the result decodes");
+        assert_eq!((back.width, back.height), (64, 48));
+        assert_eq!(back.pixels, img.pixels, "a lossless encode moved a pixel");
+
+        // Without a profile it still writes a file, just an untagged one.
+        let bare = encode_lossless(&img, None).expect("a lossless WebP with no profile");
+        assert!(is_webp(&bare));
+        assert_eq!(icc_profile(&bare), None);
     }
 
     #[test]

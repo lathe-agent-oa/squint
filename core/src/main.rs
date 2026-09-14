@@ -3,7 +3,7 @@
 //! This drives the engine without a user interface so that quality and speed can
 //! be measured against real photographs before any application exists.
 
-use squint_core::{score, optimize, png, Hdr, Mode, Source, JPEG_SCORE_CEILING};
+use squint_core::{score, optimize, optimize_as, png, Hdr, Mode, OutputFormat, Source, JPEG_SCORE_CEILING};
 use std::time::Instant;
 
 /// How the gain map fared, for the line the harness prints.
@@ -30,6 +30,10 @@ fn usage() -> ! {
   --png-quality  palette quality floor for PNG, negative for lossless (default 70)
   --max-dimension  cap the long edge in pixels; never enlarges (default none)
   --out          write the result to this path
+  --format       jpeg (default), avif, or webp. avif and webp are conversions:
+                 the result is a different kind of file and goes beside the
+                 original, never over it. webp is lossless and suits what a PNG
+                 suits; on a photograph it will be refused for growing the file
   --against      score this image against another instead of encoding"
     );
     std::process::exit(2)
@@ -47,6 +51,7 @@ fn main() {
     let mut probes = 6usize;
     let mut against: Option<String> = None;
     let mut out_path: Option<String> = None;
+    let mut format = OutputFormat::Jpeg;
     let mut max_dimension: Option<u32> = None;
     // The same default the application sends. It used to be lossless here and
     // quantized there, so every PNG number ever measured on this harness
@@ -63,6 +68,9 @@ fn main() {
             "--probes" => probes = next.and_then(|v| v.parse().ok()).unwrap_or_else(|| usage()),
             "--against" => against = Some(next.unwrap_or_else(|| usage()).clone()),
             "--out" => out_path = Some(next.unwrap_or_else(|| usage()).clone()),
+            "--format" => {
+                format = OutputFormat::parse(next.unwrap_or_else(|| usage())).unwrap_or_else(|| usage())
+            }
             // Negative means lossless, matching the C interface. A value that
             // does not parse is a mistake worth stopping for, not a silent
             // switch to a different kind of compression.
@@ -127,7 +135,12 @@ fn main() {
 
     // PNG takes a different path: palette quantization rather than a quality dial,
     // and an alpha channel the metric cannot see directly.
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+    //
+    // Only when a PNG is what was asked for. This branch writes PNG bytes to
+    // whatever `--out` names, so reaching it with another format requested
+    // produces a file whose contents do not match its name — a worse outcome
+    // than refusing, because nothing reports it.
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) && format == OutputFormat::Jpeg {
         let t0 = Instant::now();
         let measure = mode == "quality";
         let effort = if mode == "quality" { png::Effort::Thorough } else { png::Effort::Quick };
@@ -200,14 +213,14 @@ fn main() {
         // larger than its input where the application refused.
         "fast" | "quality" => {
             let requested = if mode == "quality" { Mode::Quality } else { Mode::Fast };
-            if requested == Mode::Quality && target > JPEG_SCORE_CEILING {
+            if requested == Mode::Quality && format == OutputFormat::Jpeg && target > JPEG_SCORE_CEILING {
                 eprintln!(
                     "target {target:.0} is above the JPEG ceiling of about {JPEG_SCORE_CEILING:.0}; \
                      the search cannot converge"
                 );
                 std::process::exit(1)
             }
-            let r = optimize(&bytes, requested, target, fixed_quality, png_min_quality, probes, max_dimension)
+            let r = optimize_as(&bytes, format, requested, target, fixed_quality, png_min_quality, probes, max_dimension)
                 .unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
             let elapsed = started.elapsed().as_secs_f64();
 
@@ -239,7 +252,7 @@ fn main() {
                 elapsed,
                 hdr_note(r.hdr),
                 match r.converted_from {
-                    Some(f) => format!("  written as JPEG (from {f})"),
+                    Some(f) => format!("  written as {} (from {f})", format.extension().to_uppercase()),
                     None => "".into(),
                 }
             );
@@ -251,8 +264,9 @@ fn main() {
                 // to refuse it too, since it writes wherever it is pointed.
                 if r.converted_from.is_some() && std::fs::canonicalize(o).ok() == std::fs::canonicalize(path).ok() {
                     eprintln!(
-                        "{} became a JPEG, which must not be written over the original; choose another --out path",
-                        r.converted_from.unwrap_or("this file")
+                        "{} became {}, which must not be written over the original; choose another --out path",
+                        r.converted_from.unwrap_or("this file"),
+                        format.extension().to_uppercase()
                     );
                     std::process::exit(1)
                 }
