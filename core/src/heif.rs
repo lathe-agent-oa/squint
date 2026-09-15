@@ -108,11 +108,19 @@ fn compatible_brands(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     // major brand — so the start is clamped as well as the end, and a range
     // that would begin past the last byte collapses to an empty one.
     let start = 16.min(bytes.len());
-    let end = if (16..=bytes.len()).contains(&size) {
+    let declared = if (16..=bytes.len()).contains(&size) {
         size
     } else {
         start
     };
+    // `size` is the box's own declaration and a file may declare anything. A
+    // declaration reaching past the header swallows whatever boxes follow and
+    // scans them four bytes at a time for `avif` or `avis` — which is what
+    // decides whether this picture is named an AVIF and whether it is refused
+    // as a sequence. A real brand list is short, so the scan is bounded and a
+    // false size cannot reach beyond the header it belongs to.
+    const MAX_BRANDS: usize = 32;
+    let end = declared.min(start.saturating_add(MAX_BRANDS * 4));
     bytes[start..end].chunks_exact(4)
 }
 
@@ -509,6 +517,28 @@ mod tests {
             out.extend_from_slice(*brand);
         }
         out
+    }
+
+    #[test]
+    fn a_brand_declared_past_the_header_is_not_read_as_one() {
+        // An `ftyp` claiming to be far longer than it is, with `avif` planted
+        // where a following box would sit. Believing the claim reads that
+        // FourCC as a compatible brand and renames the picture.
+        let mut lying = ftyp(b"heic", &[b"mif1"]);
+        let header = lying.len();
+        lying.extend_from_slice(&vec![0u8; 400]);
+        lying.extend_from_slice(b"avif");
+        lying.extend_from_slice(&vec![0u8; 64]);
+        let total = lying.len() as u32;
+        lying[0..4].copy_from_slice(&total.to_be_bytes());
+
+        assert!(
+            !is_avif(&lying),
+            "a FourCC beyond the brand list is not a brand"
+        );
+        assert!(!is_image_sequence(&lying));
+        assert_eq!(container_name(&lying), "HEIC");
+        assert!(is_heif(&lying));
     }
 
     #[test]
