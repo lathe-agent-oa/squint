@@ -8,10 +8,10 @@ Reviewed at commit `c7ea926`, three commits off `origin/main` at `5c621d9`. Roun
 |---|---|---|---|
 | Gemini 3.9 | `agyx` | all four files, line refs | 6.5 KB, both defects found, one fix wrong |
 | SWE-2 max | Devin CLI | all four files | 10.8 KB, the round's strongest lane — four defects, two of which no other lane saw |
-| DeepSeek V4.1 Flash | `ccx` | **brief only** — its tool access is jailed to the skill directory, so it never opened the repo | 11.5 KB reasoned from the prose; no line-level findings |
+| DeepSeek V4.1 Flash | `ccx` | all four files, **inline** — `council-ccx.sh` appends every source into the prompt | 11.5 KB, four defects, two of them found by no other lane |
 | GPT-5.6 Terra | `ccx` | nothing | lane failure: HTTP 429, `usage_limit_reached` on the ChatGPT free plan |
 
-Two of four lanes read the code. DeepSeek's inability to leave the skill directory is a runner limitation worth fixing before the next round; its output is not evidence about this diff.
+Three of four lanes read the code. DeepSeek said its tool access was "jailed to `/Users/bemeadows/.claude/skills/council`" and that it was reading from the brief — but `council-ccx.sh` had already appended all four sources into its prompt, 79,360 bytes against a 1 MB `ARG_MAX`. What it lacked was a read tool pointed at the repo, which is why it cited by function and expression rather than by line. A model describing its tool limits is not describing its prompt.
 
 ## Verified defects — both reproduced as failing tests before being changed
 
@@ -71,9 +71,9 @@ A WebP has no orientation field of its own; a turn can only be recorded inside i
 ## What the lanes got wrong
 
 - Gemini's fix for defect 2 would have broken animated strip (above). It also declared the `VP8X` flag clearing "confirmed safe and correct" — it was neither, as defect 3 shows, and Gemini's own reasoning ("`out.len() > 20` prevents out-of-bounds indexing if `VP8X` has a zero-length payload") mistook a bounds check for a correctness check.
-- DeepSeek produced 11.5 KB about code it could not read. Its tool access is jailed to the skill directory, so `council-ccx.sh` never got the sources to it. Worth fixing in the runner before the next round; nothing it said is evidence about this diff.
+- **Nothing. The error was mine.** DeepSeek was recorded here as having reviewed code it never saw, on the strength of its own opening sentence. It had the sources inline, and its review cites `has_picture`, `strip_webp` and `walk(` — identifiers that appear nowhere in the brief. It found defect 3 independently of SWE-2, and it flagged the WebP orientation assumption that shipped as a fix in #60. Three further findings went unexamined for a day as a result: the `ftyp` brand overrun, corrected here; a missing payload floor on `has_picture`, refuted by reading `image-webp`, which bounds its walk by `riff_size` and returns typed errors rather than panicking; and `icc_profile` conflating a torn chain with an absent profile, real in shape but unreachable for the same reason. `council-ccx.sh` now runs the lane in the brief's directory so its read tool can reach the tree.
 - **A process error of mine, not a lane's:** the Devin reply was still streaming when I first read it at 1.2 KB, and I recorded it as truncated. It finished at 10.8 KB, and defects 3 and 4 were in the part I had not waited for. Two of the four defects in this round would have shipped because a file was read once while it was still being written. Read a lane's output only after its process has exited.
 
 ## Seat quality this round
 
-SWE-2 (Devin) > Gemini (agyx) >> DeepSeek (no file access) > GPT-5.6 Terra (lane failure). SWE-2 found four defects to Gemini's two, was alone on the two that mattered most, and was the only lane to distinguish what it had confirmed from what it suspected. Gemini was faster and its line references were exact.
+DeepSeek V4.1 Flash ≈ SWE-2 (Devin) > Gemini (agyx) >> GPT-5.6 Terra (lane failure). SWE-2 and DeepSeek each found four defects and converged on the two that mattered most; both separated what they had confirmed from what they suspected, and DeepSeek was alone in naming the `ftyp` overrun. Gemini was fastest and its line references were exact, but it proposed a fix that would have broken animated strip and pronounced a genuinely buggy guard correct. The ranking as first written put DeepSeek last on a misreading of one sentence.
