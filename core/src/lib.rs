@@ -637,6 +637,16 @@ pub fn optimize_as(
                     original_bytes: bytes.len(),
                 });
             }
+            // A rewritten document is not always smaller: one its writer had
+            // packed tighter than this can, or one with little to lose, comes
+            // back larger. A larger result is refused as it is for every
+            // other format, and the original stands.
+            if r.data.len() >= bytes.len() {
+                return Err(Error::NoSmallerResult {
+                    best_bytes: r.data.len(),
+                    original_bytes: bytes.len(),
+                });
+            }
             return Ok(Optimized {
                 data: r.data,
                 probes: Vec::new(),
@@ -987,6 +997,73 @@ mod tests {
         assert_eq!(OutputFormat::Jpeg.extension(), "jpg");
         assert_eq!(OutputFormat::Avif.extension(), "avif");
         assert_eq!(OutputFormat::WebpLossless.extension(), "webp");
+    }
+
+    #[test]
+    fn a_stripped_pdf_is_never_larger_than_it_came() {
+        use lopdf::{dictionary, Document, Object};
+
+        // A long producer string, so that losing it is a shrink no layout
+        // difference between two writers can hide.
+        let mut doc = Document::with_version("1.5");
+        let info = doc.add_object(dictionary! { "Producer" => Object::string_literal("Quartz PDFContext ".repeat(256)) });
+        doc.trailer.set("Info", Object::Reference(info));
+        let pages = doc.add_object(dictionary! {
+            "Type" => Object::Name(b"Pages".to_vec()), "Kids" => Object::Array(vec![]), "Count" => Object::Integer(0),
+        });
+        let catalog = doc.add_object(dictionary! {
+            "Type" => Object::Name(b"Catalog".to_vec()), "Pages" => Object::Reference(pages),
+        });
+        doc.trailer.set("Root", Object::Reference(catalog));
+        for i in 0..200 {
+            doc.add_object(dictionary! {
+                "Type" => Object::Name(b"Annot".to_vec()), "Contents" => Object::string_literal(format!("note {i}")),
+            });
+        }
+
+        let mut plain = Vec::new();
+        doc.save_to(&mut plain).unwrap();
+        let r = optimize(&plain, Mode::Strip, 0.0, 0.0, None, 0, None).unwrap_or_else(|e| panic!("{e}"));
+        assert!(r.data.len() < plain.len(), "stripping a plain file should shrink it");
+
+        // Three objects written by hand with no room to spare. Losing a
+        // one-letter producer cannot pay for the object stream and the
+        // cross-reference stream the rewrite wraps everything in.
+        let tiny = {
+            let objects = ["<</Type/Catalog/Pages 2 0 R>>", "<</Type/Pages/Kids[]/Count 0>>", "<</Producer(x)>>"];
+            let mut out = String::from("%PDF-1.4\n");
+            let mut offsets = Vec::new();
+            for (i, body) in objects.iter().enumerate() {
+                offsets.push(out.len());
+                out.push_str(&format!("{} 0 obj{body}endobj\n", i + 1));
+            }
+            let xref = out.len();
+            out.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+            for offset in offsets {
+                out.push_str(&format!("{offset:010} 00000 n \n"));
+            }
+            out.push_str(&format!(
+                "trailer<</Size {}/Root 1 0 R/Info 3 0 R>>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            ));
+            out.into_bytes()
+        };
+        let rewritten = pdf::rewrite(&tiny, Mode::Strip, 0.0, 0.0, 0, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(rewritten.metadata_removed, 1);
+        assert!(
+            rewritten.data.len() > tiny.len(),
+            "test premise: rewriting {} hand-written bytes should come out larger, got {}",
+            tiny.len(),
+            rewritten.data.len()
+        );
+        match optimize(&tiny, Mode::Strip, 0.0, 0.0, None, 0, None) {
+            Err(Error::NoSmallerResult { best_bytes, original_bytes }) => {
+                assert_eq!(original_bytes, tiny.len());
+                assert_eq!(best_bytes, rewritten.data.len());
+            }
+            Err(e) => panic!("{e}"),
+            Ok(r) => panic!("a stripped PDF of {} bytes was handed back for one of {}", r.data.len(), tiny.len()),
+        }
     }
 
     #[test]
