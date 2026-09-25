@@ -188,6 +188,47 @@ fn decode_image(doc: &Document, stream: &lopdf::Stream, filter: Option<&[u8]>) -
     }
 }
 
+/// The image XObjects that carry a picture, in the order they sit in the file.
+///
+/// Two kinds of image are not pictures. A stencil mask (`/ImageMask true`)
+/// paints a shape and is one bit per pixel. A soft mask is another image's
+/// alpha channel: a reader takes it as single-channel `DeviceGray` whatever
+/// its dictionary says, so handing it back as a three-channel JPEG paints the
+/// wrong opacity over the picture it belongs to. Any stream another image
+/// names as its `/SMask` or `/Mask` is therefore left with the bytes it
+/// arrived with, however it happens to be encoded.
+fn image_candidates(doc: &Document) -> Vec<ObjectId> {
+    let mut masks: BTreeSet<ObjectId> = BTreeSet::new();
+    let mut pictures = Vec::new();
+    for (id, object) in doc.objects.iter() {
+        let Ok(stream) = object.as_stream() else { continue };
+        let is_image = stream
+            .dict
+            .get(b"Subtype")
+            .and_then(|o| o.as_name())
+            .map(|n| n == b"Image")
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        for key in [&b"SMask"[..], b"Mask"] {
+            if let Ok(Object::Reference(mask)) = stream.dict.get(key) {
+                masks.insert(*mask);
+            }
+        }
+        let is_stencil = stream
+            .dict
+            .get(b"ImageMask")
+            .and_then(|o| o.as_bool())
+            .unwrap_or(false);
+        if !is_stencil {
+            pictures.push(*id);
+        }
+    }
+    pictures.retain(|id| !masks.contains(id));
+    pictures
+}
+
 /// Re-encode the pictures inside a PDF, and remove what the document discloses.
 ///
 /// `max_dpi` caps resolution, judged against the widest page. `mode` decides
@@ -225,28 +266,7 @@ pub fn rewrite(
 
     // Collected first because re-encoding borrows the document mutably, one
     // object at a time, and the walk that finds them borrows it immutably.
-    let candidates: Vec<ObjectId> = doc
-        .objects
-        .iter()
-        .filter(|(_, object)| {
-            let Ok(stream) = object.as_stream() else { return false };
-            let is_image = stream
-                .dict
-                .get(b"Subtype")
-                .and_then(|o| o.as_name())
-                .map(|n| n == b"Image")
-                .unwrap_or(false);
-            // A stencil mask paints a shape rather than carrying a picture, and
-            // is one bit per pixel.
-            let is_mask = stream
-                .dict
-                .get(b"ImageMask")
-                .and_then(|o| o.as_bool())
-                .unwrap_or(false);
-            is_image && !is_mask
-        })
-        .map(|(id, _)| *id)
-        .collect();
+    let candidates = image_candidates(&doc);
 
     let mut images_rewritten = 0usize;
     let images_seen = candidates.len();
@@ -483,6 +503,28 @@ mod tests {
 
         let bare = lopdf::Stream::new(dictionary! {}, vec![]);
         assert_eq!(outermost_filter(&bare), None);
+    }
+
+    #[test]
+    fn a_mask_is_not_a_picture() {
+        let mut doc = Document::with_version("1.5");
+        // A JPEG-coded soft mask looks like any other grey picture from its
+        // own dictionary; only the picture that uses it says what it is.
+        let soft = doc.add_object(image(dictionary! {
+            "Type" => name("XObject"), "Subtype" => name("Image"),
+            "ColorSpace" => name("DeviceGray"), "Filter" => name("DCTDecode"),
+        }));
+        let stencil = doc.add_object(image(dictionary! {
+            "Type" => name("XObject"), "Subtype" => name("Image"), "ImageMask" => Object::Boolean(true),
+        }));
+        let picture = doc.add_object(image(dictionary! {
+            "Type" => name("XObject"), "Subtype" => name("Image"), "ColorSpace" => name("DeviceRGB"),
+            "SMask" => Object::Reference(soft), "Mask" => Object::Reference(stencil),
+        }));
+        let plain = doc.add_object(image(dictionary! { "Type" => name("XObject"), "Subtype" => name("Image") }));
+        doc.add_object(image(dictionary! { "Type" => name("XObject"), "Subtype" => name("Form") }));
+
+        assert_eq!(image_candidates(&doc), vec![picture, plain]);
     }
 
     #[test]
