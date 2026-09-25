@@ -297,6 +297,17 @@ pub fn rewrite(
             continue;
         }
         let original_len = stream.content.len();
+        // A space that names a profile over three components still describes
+        // the samples after re-encoding, because nothing here converts colour:
+        // the profile stays with the picture, which is the rule for every
+        // other format. A single-component source comes back as three, and a
+        // profile for one channel says nothing true about those.
+        let keeps_space = stream
+            .dict
+            .get(b"ColorSpace")
+            .ok()
+            .and_then(|space| colour_components(&doc, space))
+            == Some(3);
         let Some(image) = decode_image(&doc, stream, filter.as_deref()) else { continue };
 
         // The cap is on resolution, and resolution is pixels across the page
@@ -325,7 +336,9 @@ pub fn rewrite(
         stream.dict.set("Filter", Object::Name(b"DCTDecode".to_vec()));
         stream.dict.set("Width", Object::Integer(w as i64));
         stream.dict.set("Height", Object::Integer(h as i64));
-        stream.dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+        if !keeps_space {
+            stream.dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+        }
         stream.dict.set("BitsPerComponent", Object::Integer(8));
         // Parameters describing how the old bytes were packed say nothing true
         // about the new ones.
@@ -494,6 +507,51 @@ mod tests {
         let mut late = vec![b'x'; 4096];
         late.extend_from_slice(b"%PDF-1.7");
         assert!(!is_pdf(&late));
+    }
+
+    #[test]
+    fn a_picture_keeps_the_profile_its_colours_are_defined_by() {
+        // Flat raw samples above the perceptual minimum, so the fast encode
+        // is far smaller than the source and the rewrite goes through.
+        let side = MIN_IMAGE_DIM + 15;
+        let raw = |components: usize| vec![0x80u8; side * side * components];
+        let mut doc = Document::with_version("1.5");
+        let profile = doc.add_object(Object::Stream(lopdf::Stream::new(dictionary! { "N" => 3 }, vec![])));
+        let icc = Object::Array(vec![name("ICCBased"), Object::Reference(profile)]);
+        let tagged = doc.add_object(Object::Stream(lopdf::Stream::new(
+            dictionary! {
+                "Type" => name("XObject"), "Subtype" => name("Image"), "Width" => side as i64, "Height" => side as i64,
+                "ColorSpace" => icc, "BitsPerComponent" => 8,
+            },
+            raw(3),
+        )));
+        let grey = doc.add_object(Object::Stream(lopdf::Stream::new(
+            dictionary! {
+                "Type" => name("XObject"), "Subtype" => name("Image"), "Width" => side as i64, "Height" => side as i64,
+                "ColorSpace" => name("DeviceGray"), "BitsPerComponent" => 8,
+            },
+            raw(1),
+        )));
+        one_page(
+            &mut doc,
+            dictionary! { "Resources" => dictionary! { "XObject" => dictionary! {
+                "Im0" => Object::Reference(tagged), "Im1" => Object::Reference(grey),
+            } } },
+            dictionary! { "MediaBox" => rect(612, 792) },
+        );
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+
+        let rewritten = rewrite(&bytes, Mode::Fast, 0.0, 75.0, 0, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(rewritten.images_rewritten, 2, "both pictures should have been re-encoded");
+
+        let after = Document::load_mem(&rewritten.data).unwrap();
+        let space_of = |id: ObjectId| after.get_object(id).unwrap().as_stream().unwrap().dict.get(b"ColorSpace").unwrap().clone();
+        // The profile is still the space the samples are read through.
+        let kept = space_of(tagged);
+        assert_eq!(kept.as_array().unwrap()[0].as_name().unwrap(), b"ICCBased", "the profile was dropped: {kept:?}");
+        // One channel became three, and a one-channel profile would lie about them.
+        assert_eq!(space_of(grey).as_name().unwrap(), b"DeviceRGB");
     }
 
     #[test]
