@@ -270,7 +270,7 @@ pub fn rewrite(
     // every byte they arrived with.
     if mode == Mode::Strip {
         let mut out = Vec::new();
-        doc.save_to(&mut out)
+        doc.save_modern(&mut out)
             .map_err(|e| Error::Encode(format!("this PDF could not be written: {e}")))?;
         return Ok(Rewritten {
             data: out,
@@ -334,8 +334,13 @@ pub fn rewrite(
         images_rewritten += 1;
     }
 
+    // Written the way a current producer writes: the small objects packed
+    // into object streams and the cross-reference table as a stream. Written
+    // one object at a time instead, every real document tried came back
+    // larger than it arrived even with its metadata gone, and the never-grow
+    // rule then refused all of them.
     let mut out = Vec::new();
-    doc.save_to(&mut out)
+    doc.save_modern(&mut out)
         .map_err(|e| Error::Encode(format!("this PDF could not be written: {e}")))?;
 
     Ok(Rewritten { data: out, images_rewritten, images_seen, metadata_removed })
