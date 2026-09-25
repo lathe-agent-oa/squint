@@ -85,6 +85,25 @@ fn outermost_filter(stream: &lopdf::Stream) -> Option<Vec<u8>> {
     }
 }
 
+/// A page's `/MediaBox`, its own or the one it inherits from the page tree.
+///
+/// The box is one of the entries a page may leave to an ancestor, and a writer
+/// whose pages are all one size tends to declare it once on the root `/Pages`
+/// node and nowhere else: Ghostscript, LibreOffice and Word's export all do.
+/// Read off the leaf alone, such a document has no page size at all.
+fn media_box<'a>(doc: &'a Document, page: ObjectId) -> Option<&'a Vec<Object>> {
+    let mut node = page;
+    // A page tree is a few levels deep; the bound is against a `/Parent` cycle.
+    for _ in 0..64 {
+        let dict = doc.get_dictionary(node).ok()?;
+        if let Ok(boxed) = dict.get(b"MediaBox") {
+            return doc.dereference(boxed).ok()?.1.as_array().ok();
+        }
+        node = dict.get(b"Parent").ok()?.as_reference().ok()?;
+    }
+    None
+}
+
 /// The longest side of any page in the document, in points.
 ///
 /// The longest side rather than the width, because the cap is applied to a
@@ -100,8 +119,7 @@ fn outermost_filter(stream: &lopdf::Stream) -> Option<Vec<u8>> {
 fn longest_page_pt(doc: &Document) -> f32 {
     let mut longest = 0.0f32;
     for (_, id) in doc.get_pages() {
-        let Ok(page) = doc.get_dictionary(id) else { continue };
-        let Ok(boxed) = page.get(b"MediaBox").and_then(|o| o.as_array()) else { continue };
+        let Some(boxed) = media_box(doc, id) else { continue };
         if boxed.len() != 4 {
             continue;
         }
@@ -560,6 +578,24 @@ mod tests {
         // An indexed or separation space is not one this reads.
         let indexed = Object::Array(vec![Object::Name(b"Indexed".to_vec()), Object::Integer(255)]);
         assert_eq!(colour_components(&doc, &indexed), None);
+    }
+
+    #[test]
+    fn a_page_size_declared_once_on_the_tree_is_still_read() {
+        // What Ghostscript, LibreOffice and Word's export write: one box on
+        // the root, and every page inherits it.
+        let mut doc = Document::with_version("1.5");
+        let (tree, page) = one_page(&mut doc, dictionary! {}, dictionary! { "MediaBox" => rect(842, 1191) });
+        assert_eq!(longest_page_pt(&doc), 1191.0, "an A3 page inherited from the tree");
+
+        // A page's own box wins over the tree's.
+        doc.get_dictionary_mut(page).unwrap().set("MediaBox", rect(612, 792));
+        assert_eq!(longest_page_pt(&doc), 792.0);
+
+        // No box anywhere is US Letter, not zero.
+        doc.get_dictionary_mut(page).unwrap().remove(b"MediaBox");
+        doc.get_dictionary_mut(tree).unwrap().remove(b"MediaBox");
+        assert_eq!(longest_page_pt(&doc), FALLBACK_PAGE_LONG_PT);
     }
 
     #[test]
