@@ -121,6 +121,10 @@ impl std::fmt::Display for Error {
                 f,
                 "this image cannot be reduced to a colour quality of {floor}; the file was not changed"
             ),
+            Error::ReadOnlyFormat { format: "PDF" } => write!(
+                f,
+                "a PDF is rewritten as a PDF, with the pictures inside it re-encoded in place, and does not become another format; the file was not changed"
+            ),
             Error::ReadOnlyFormat { format } => write!(
                 f,
                 "{format} can have its location and camera data removed, but squint cannot re-encode it yet; the file was not changed"
@@ -1073,6 +1077,20 @@ mod tests {
         assert!(!OutputFormat::WebpLossless.searchable());
         assert!(OutputFormat::Jpeg.searchable());
         assert!(OutputFormat::Avif.searchable());
+    }
+
+    #[test]
+    fn a_pdf_is_never_written_as_a_picture_format() {
+        // Refused before the document is even opened: a PDF is rewritten as
+        // itself, and naming another format for one is a mistake to report
+        // rather than a flag to drop.
+        for format in [OutputFormat::Avif, OutputFormat::WebpLossless] {
+            match optimize_as(b"%PDF-1.7\n", format, Mode::Fast, 80.0, 0.0, None, 0, None) {
+                Err(Error::ReadOnlyFormat { format: "PDF" }) => {}
+                Err(e) => panic!("{e}"),
+                Ok(_) => panic!("a PDF was written as {format:?}"),
+            }
+        }
     }
 
     #[test]

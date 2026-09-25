@@ -177,14 +177,16 @@ fn main() {
     }
 
     // A PDF is not a picture, so it never reaches `Source::open`. It goes
-    // through `optimize` like everything else rather than being rewritten here:
-    // a private copy of the work in the harness is how this tool once came to
-    // measure something the application does not do.
+    // through `optimize_as` with the format that was asked for, like
+    // everything else, rather than being rewritten here: the engine is what
+    // refuses a format a PDF cannot become, and a private copy of the work in
+    // the harness is how this tool once came to measure something the
+    // application does not do.
     if squint_core::pdf::is_pdf(&bytes) {
         let requested = if mode == "quality" { Mode::Quality } else { Mode::Fast };
         let pages = squint_core::pdf::page_count(&bytes);
         let t0 = Instant::now();
-        match optimize(&bytes, requested, target, fixed_quality, png_min_quality, probes, None) {
+        match optimize_as(&bytes, format, requested, target, fixed_quality, png_min_quality, probes, None) {
             Ok(r) => {
                 println!(
                     "{}  {} {:>7.0} KB -> {:>7.0} KB  {:>5.1}%  images re-encoded in place  {:.3}s",
