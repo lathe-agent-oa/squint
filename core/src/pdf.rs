@@ -17,6 +17,8 @@
 //! matrix covers the same area at a lower resolution. That is what makes a
 //! resolution cap possible without rewriting a single content stream.
 
+use std::collections::BTreeSet;
+
 use lopdf::{Document, Object, ObjectId};
 
 use crate::{encode_jpeg, search_as, Error, Image, Mode, OutputFormat};
@@ -346,7 +348,14 @@ fn encode_one(
 /// drop the rest by exclusion, so a producer field nobody has heard of yet
 /// leaves without being named. `/Info` carries the author, the application and
 /// the times the file was written; `/Metadata` is an XMP packet that usually
-/// repeats all of it and often more.
+/// repeats all of it and often more, and sits on the catalog, then again on
+/// pages, pictures and fonts that were made by a tool that signs its work.
+///
+/// An XMP packet is a stream of its own that a `/Metadata` entry points at,
+/// and `save_to` writes every stream the document holds whether anything
+/// still points at it or not. Taking the entry off the dictionary leaves the
+/// packet's plain text in the file for anyone with a text editor, so the
+/// stream goes from the object table as well.
 fn strip_document_metadata(doc: &mut Document) -> usize {
     let mut removed = 0;
 
@@ -359,24 +368,32 @@ fn strip_document_metadata(doc: &mut Document) -> usize {
         }
     }
 
-    let catalogs: Vec<ObjectId> = doc
-        .objects
-        .iter()
-        .filter(|(_, o)| {
-            o.as_dict()
-                .and_then(|d| d.get(b"Type"))
-                .and_then(|t| t.as_name())
-                .map(|n| n == b"Catalog")
-                .unwrap_or(false)
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    for id in catalogs {
-        if let Ok(catalog) = doc.get_dictionary_mut(id) {
-            if catalog.remove(b"Metadata").is_some() {
-                removed += 1;
+    let mut packets: BTreeSet<ObjectId> = BTreeSet::new();
+    for (id, object) in doc.objects.iter_mut() {
+        let dict = match object {
+            Object::Dictionary(dict) => dict,
+            Object::Stream(stream) => &mut stream.dict,
+            _ => continue,
+        };
+        // A packet nothing points at any more, left behind by an earlier
+        // writer, is still in the file and still says what it says.
+        let is_packet = dict
+            .get(b"Type")
+            .and_then(|t| t.as_name())
+            .map(|n| n == b"Metadata")
+            .unwrap_or(false);
+        if is_packet {
+            packets.insert(*id);
+        }
+        if let Some(entry) = dict.remove(b"Metadata") {
+            removed += 1;
+            if let Ok(target) = entry.as_reference() {
+                packets.insert(target);
             }
         }
+    }
+    for id in packets {
+        doc.delete_object(id);
     }
 
     removed
@@ -391,6 +408,35 @@ pub fn page_count(bytes: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use lopdf::dictionary;
+
+    fn name(n: &str) -> Object {
+        Object::Name(n.as_bytes().to_vec())
+    }
+
+    fn rect(w: i64, h: i64) -> Object {
+        Object::Array(vec![Object::Integer(0), Object::Integer(0), Object::Integer(w), Object::Integer(h)])
+    }
+
+    fn image(dict: lopdf::Dictionary) -> Object {
+        Object::Stream(lopdf::Stream::new(dict, vec![0u8]))
+    }
+
+    /// A catalog over one page, returning the ids of the tree root and the page.
+    fn one_page(doc: &mut Document, page: lopdf::Dictionary, tree: lopdf::Dictionary) -> (ObjectId, ObjectId) {
+        let pages = doc.new_object_id();
+        let mut page = page;
+        page.set("Type", name("Page"));
+        page.set("Parent", Object::Reference(pages));
+        let page = doc.add_object(page);
+        let mut tree = tree;
+        tree.set("Type", name("Pages"));
+        tree.set("Kids", Object::Array(vec![Object::Reference(page)]));
+        tree.set("Count", Object::Integer(1));
+        doc.objects.insert(pages, Object::Dictionary(tree));
+        let catalog = doc.add_object(dictionary! { "Type" => name("Catalog"), "Pages" => Object::Reference(pages) });
+        doc.trailer.set("Root", Object::Reference(catalog));
+        (pages, page)
+    }
 
     #[test]
     fn a_pdf_is_recognised_by_its_marker_wherever_it_starts() {
@@ -492,6 +538,51 @@ mod tests {
 
         // Running it again finds nothing, which is how the caller tells an
         // already-clean document from one it changed.
+        assert_eq!(strip_document_metadata(&mut doc), 0);
+    }
+
+    #[test]
+    fn an_xmp_packet_leaves_the_file_and_not_only_the_catalog() {
+        let mut doc = Document::with_version("1.5");
+        let mut packet = |tool: &str| {
+            doc.add_object(Object::Stream(lopdf::Stream::new(
+                dictionary! { "Type" => name("Metadata"), "Subtype" => name("XML") },
+                format!("<x:xmpmeta><rdf:Description xmp:CreatorTool=\"{tool}\"/></x:xmpmeta>").into_bytes(),
+            )))
+        };
+        let on_document = packet("Quartz PDFContext");
+        let on_page = packet("Adobe Photoshop");
+        let on_picture = packet("Adobe Illustrator");
+        // Nothing points at this one: an earlier writer left it behind.
+        let orphan = packet("Acrobat Pro");
+
+        let picture = doc.add_object(image(dictionary! {
+            "Type" => name("XObject"), "Subtype" => name("Image"), "Metadata" => Object::Reference(on_picture),
+        }));
+        let (_, page) = one_page(
+            &mut doc,
+            dictionary! {
+                "Metadata" => Object::Reference(on_page),
+                "Resources" => dictionary! { "XObject" => dictionary! { "Im0" => Object::Reference(picture) } },
+            },
+            dictionary! {},
+        );
+        let catalog = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_dictionary_mut(catalog).unwrap().set("Metadata", Object::Reference(on_document));
+
+        assert_eq!(strip_document_metadata(&mut doc), 3, "one entry each on the catalog, the page and the picture");
+        for id in [on_document, on_page, on_picture, orphan] {
+            assert!(!doc.has_object(id), "packet {id:?} is still in the object table");
+        }
+        assert!(doc.get_object(picture).is_ok(), "the picture itself stays");
+        assert!(!doc.get_dictionary(page).unwrap().has(b"Metadata"));
+
+        // What matters is the file, not the object table: `save_to` writes
+        // every object it holds, pointed at or not.
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        assert!(!out.windows(11).any(|w| w == b"CreatorTool"), "an XMP packet survived into the written file");
+
         assert_eq!(strip_document_metadata(&mut doc), 0);
     }
 }
