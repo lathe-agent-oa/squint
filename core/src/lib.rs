@@ -598,6 +598,12 @@ pub struct Optimized {
     pub probes: Vec<Probe>,
     /// Absent in fast mode, and for images too small to score.
     pub score: Option<f64>,
+    /// The encoder quality the written file was made at: the chosen probe's
+    /// after a search, the fixed quality in fast mode. Absent where no quality
+    /// setting applies, which is PNG, PDF, Strip and lossless WebP. A search
+    /// can measure two probes at the same score, so the chosen one is named
+    /// here rather than left for a reader to find by matching scores.
+    pub quality: Option<f32>,
     pub hdr: Hdr,
     /// True when the colour count was reduced. PNG's lossy mode is a palette
     /// reduction rather than a quality dial, and it is on by default, so a file
@@ -671,6 +677,7 @@ pub fn optimize_as(
                 data: r.data,
                 probes: Vec::new(),
                 score: None,
+                quality: None,
                 hdr: Hdr::Absent,
                 quantized: false,
                 original_bytes: bytes.len(),
@@ -692,6 +699,7 @@ pub fn optimize_as(
                 data: stripped,
                 probes: Vec::new(),
                 score: None,
+                quality: None,
                 hdr: Hdr::Absent,
                 quantized: false,
                 original_bytes: bytes.len(),
@@ -712,6 +720,7 @@ pub fn optimize_as(
                 data: stripped,
                 probes: Vec::new(),
                 score: None,
+                quality: None,
                 hdr: Hdr::Absent,
                 quantized: false,
                 original_bytes: bytes.len(),
@@ -736,6 +745,7 @@ pub fn optimize_as(
                 data: stripped,
                 probes: Vec::new(),
                 score: None,
+                quality: None,
                 hdr: Hdr::Absent,
                 quantized: false,
                 original_bytes: bytes.len(),
@@ -801,6 +811,7 @@ pub fn optimize_as(
             data: stripped,
             probes: Vec::new(),
             score: None,
+            quality: None,
             hdr,
             quantized: false,
             original_bytes: bytes.len(),
@@ -865,6 +876,7 @@ pub fn optimize_as(
             data: r.data,
             probes: Vec::new(),
             score: None,
+            quality: None,
             hdr: Hdr::Absent,
             quantized: false,
             original_bytes: bytes.len(),
@@ -893,6 +905,7 @@ pub fn optimize_as(
             data: r.data,
             probes: Vec::new(),
             score: r.score,
+            quality: None,
             hdr: Hdr::Absent,
             quantized: r.quantized,
             original_bytes: bytes.len(),
@@ -947,17 +960,18 @@ pub fn optimize_as(
     #[cfg(not(target_os = "macos"))]
     let _ = orientation;
 
-    let (data, score, probes) = match mode {
+    let (data, score, probes, quality) = match mode {
         // Strip is handled above and never reaches this match.
         Mode::Fast | Mode::Strip => {
-            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new())
+            let quality = format.searchable().then_some(fixed_quality);
+            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new(), quality)
         }
         // A lossless format has one outcome, so there is nothing to search for:
         // probing would encode the same file repeatedly and score it 100 each
         // time. It is encoded once and reported without a score, because a
         // number that is always the same measures nothing.
         Mode::Quality if !format.searchable() => {
-            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new())
+            (format.encode(&image, fixed_quality, icc.as_deref())?, None, Vec::new(), None)
         }
         Mode::Quality => {
             // The ceiling is JPEG's. AVIF was measured past it, so applying the
@@ -966,7 +980,7 @@ pub fn optimize_as(
                 return Err(Error::Unreachable { best_score: JPEG_SCORE_CEILING });
             }
             let r = search_as(format, &image, target, max_probes, size_to_beat, icc.as_deref())?;
-            (r.data, Some(r.chosen.score), r.probes)
+            (r.data, Some(r.chosen.score), r.probes, Some(r.chosen.quality))
         }
     };
 
@@ -991,6 +1005,7 @@ pub fn optimize_as(
         data,
         probes,
         score,
+        quality,
         hdr,
         quantized: false,
         original_bytes: bytes.len(),
@@ -1066,6 +1081,7 @@ fn hdr_in_place(
         data,
         probes,
         score,
+        quality: Some(quality),
         hdr: Hdr::Preserved,
         quantized: false,
         original_bytes: source.bytes.len(),
