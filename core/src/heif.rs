@@ -687,7 +687,7 @@ fn empty_xmp(length: usize) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn be32(n: u32) -> [u8; 4] {
@@ -697,7 +697,7 @@ mod tests {
     /// A HEIF with one picture item and one EXIF item, laid out the way a
     /// camera lays one out: declarations in `meta`, payloads in `mdat`, and
     /// absolute offsets tying them together.
-    fn heif_with_exif() -> (Vec<u8>, std::ops::Range<usize>) {
+    pub(crate) fn heif_with_exif() -> (Vec<u8>, std::ops::Range<usize>) {
         // Two items: 1 is the picture, 2 is the EXIF block.
         let mut infe1 = Vec::new();
         infe1.extend_from_slice(&be32(0)); // size, filled below
