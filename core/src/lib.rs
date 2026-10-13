@@ -738,7 +738,9 @@ pub fn optimize_as(
                 tiff::strip_tiff(bytes)
                     .ok_or_else(|| Error::Decode("this TIFF is not laid out as expected".into()))?
             };
-            if wiped == 0 {
+            // Destroying metadata that an earlier Strip already destroyed
+            // rewrites the same bytes, so a second Strip is caught here.
+            if wiped == 0 || stripped == bytes {
                 return Err(Error::NothingToRemove);
             }
             return Ok(Optimized {
@@ -1393,6 +1395,20 @@ mod tests {
     #[test]
     fn stripping_rejects_input_that_is_not_a_jpeg() {
         assert!(metadata::strip_jpeg(b"not a jpeg").is_none());
+    }
+
+    #[test]
+    fn a_heif_stripped_twice_has_nothing_to_remove_the_second_time() {
+        let (heif, _) = heif::tests::heif_with_exif();
+        let strip = |b: &[u8]| optimize_as(b, OutputFormat::Jpeg, Mode::Strip, 0.0, 0.0, None, 0, None);
+
+        let once = strip(&heif).expect("the EXIF item is removed");
+        assert_ne!(once.data, heif);
+        match strip(&once.data) {
+            Err(Error::NothingToRemove) => {}
+            Err(e) => panic!("expected NothingToRemove, got {e}"),
+            Ok(_) => panic!("the second Strip reported something removed"),
+        }
     }
 
     /// The output of a failed walk used to be returned as a success. Since the
